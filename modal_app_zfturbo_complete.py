@@ -50,25 +50,34 @@ SEPARATION_MODELS = {
         "model_url": f"{RELEASES}/v1.0.15/model_scnet_ep_36_sdr_10.0891.ckpt",
         "config_file": "config_musdb18_scnet_xl_more_wide_v5.yaml",
         "model_file": "model_scnet_ep_36_sdr_10.0891.ckpt",
+        "config_sha256": "54ddcb8aeeae85c8d0e148741e7d87b0fbd38bd21cffa5d59ba124fe1e672f40",
+        "model_sha256": "ac25975f0f5704f3d1a3c3c251505b7a0f417a22eafe82773440ee4f7e14b74f",
         "sdr": "9.92",
     },
     "vocals": {
         "name": "Mel-Band RoFormer (KimberleyJensen)",
         "model_type": "mel_band_roformer",
         "config_url": f"https://raw.githubusercontent.com/ZFTurbo/Music-Source-Separation-Training/{ZFTURBO_COMMIT}/configs/KimberleyJensen/config_vocals_mel_band_roformer_kj.yaml",
-        "model_url": "https://huggingface.co/KimberleyJSN/melbandroformer/resolve/main/MelBandRoformer.ckpt",
+        # pinned to a Hugging Face commit, not the moving "main" ref
+        "model_url": "https://huggingface.co/KimberleyJSN/melbandroformer/resolve/ac9b0614ab3cd7f77219e18ba494dfd93956c348/MelBandRoformer.ckpt",
         "config_file": "config_vocals_mel_band_roformer_kj.yaml",
         "model_file": "MelBandRoformer.ckpt",
+        "config_sha256": "f63f38eb1e6e40a7db0dade714a5ae257555dd8748f4e774eae8679275a81926",
+        "model_sha256": "87201f4d31afb5bc79993230fc49446918425574db48c01c405e44f365c7559e",
         "sdr": "10.98",
     },
 }
 
 
 def _download_commands():
+    # .ckpt files are pickles and ZFTurbo loads them with weights_only=False,
+    # so every artifact is pinned and checked against a known SHA-256 before use.
     cmds = [f"mkdir -p {MODEL_DIR}"]
     for m in SEPARATION_MODELS.values():
-        cmds.append(f"curl -fsSL -o {MODEL_DIR}/{m['config_file']} {m['config_url']}")
-        cmds.append(f"curl -fsSL -o {MODEL_DIR}/{m['model_file']} {m['model_url']}")
+        for kind in ("config", "model"):
+            path = f"{MODEL_DIR}/{m[kind + '_file']}"
+            cmds.append(f"curl -fsSL -o {path} {m[kind + '_url']}")
+            cmds.append(f"echo '{m[kind + '_sha256']}  {path}' | sha256sum -c -")
     return cmds
 
 
