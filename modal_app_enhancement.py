@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
+"""
+Klein Digital Solutions - Audio Enhancement Service
+- MossFormer2_SE_48K (ClearerVoice-Studio) for AI noise reduction (noisereduce as fallback)
+- Whisper large-v3-turbo for filler word detection
+- AST (MIT/ast-finetuned-audioset) for cough/sneeze/click detection
+- pedalboard + pyloudnorm for the broadcast chain
+"""
 
 import modal
-import asyncio
 import uuid
 import json
 import time
 import tempfile
 import os
+import string
 from pathlib import Path
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form
-from fastapi.responses import FileResponse, JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-from typing import Optional
 import logging
 
 # Configure logging
@@ -21,28 +24,49 @@ logger = logging.getLogger(__name__)
 # Modal App Configuration
 app = modal.App("audio-enhancement-complete")
 
+WHISPER_MODEL = "turbo"  # large-v3-turbo
+WHISPER_DIR = "/opt/whisper"
+CLEARVOICE_DIR = "/opt/clearvoice"  # ClearVoice stores checkpoints relative to the working dir
+CLEARVOICE_MODEL = "MossFormer2_SE_48K"
+AST_MODEL = "MIT/ast-finetuned-audioset-10-10-0.4593"
+HF_CACHE = "/opt/hf-cache"
+# AudioSet labels to suppress (looked up by name in the model config)
+UNWANTED_SOUNDS = ["Cough", "Sneeze", "Throat clearing", "Sniff", "Click", "Tick"]
+
+
+def _prefetch_models():
+    """Download all model weights at image build time"""
+    import whisper
+    whisper.load_model(WHISPER_MODEL, device="cpu", download_root=WHISPER_DIR)
+
+    os.makedirs(CLEARVOICE_DIR, exist_ok=True)
+    os.chdir(CLEARVOICE_DIR)
+    from clearvoice import ClearVoice
+    ClearVoice(task="speech_enhancement", model_names=[CLEARVOICE_MODEL])
+
+    from transformers import ASTFeatureExtractor, ASTForAudioClassification
+    ASTFeatureExtractor.from_pretrained(AST_MODEL)
+    ASTForAudioClassification.from_pretrained(AST_MODEL)
+
+
 # Enhanced Image with dependencies
 enhancement_image = (
     modal.Image.debian_slim(python_version="3.11")
+    .apt_install(["ffmpeg", "libsndfile1", "git"])
     .pip_install([
-        "fastapi>=0.104.0",
-        "python-multipart>=0.0.6",
-        "librosa>=0.10.1",
-        "soundfile>=0.12.1", 
-        "numpy>=1.24.0",
-        "scipy>=1.11.0",
-        "noisereduce>=3.0.0",
-        "pyloudnorm>=0.1.1",
-        "pedalboard>=0.8.7",
-        "requests>=2.31.0",
-        "pydub>=0.25.1",
-        "torch>=2.0.0",
-        "torchaudio>=2.0.0",
-        "deepfilternet==0.5.6",
-        "openai-whisper>=20231117",
-        "tensorflow>=2.13.0",
-        "tensorflow-hub>=0.15.0",
+        "clearvoice",
+        "openai-whisper",
+        "transformers",
+        "noisereduce",
+        "pyloudnorm",
+        "pedalboard",
+        "pydub",
+        "requests",
+        "fastapi[standard]",
+        "python-multipart",
     ])
+    .env({"HF_HUB_CACHE": HF_CACHE})
+    .run_function(_prefetch_models)
 )
 
 # Storage
@@ -55,12 +79,13 @@ job_status = {}
 def save_job_status(job_id: str, status_data: dict):
     """Save job status to both memory and volume"""
     job_status[job_id] = status_data
-    
+
     # Also save to volume for persistence
     status_file = Path(storage_path) / f"status_{job_id}.json"
     try:
         with open(status_file, 'w') as f:
             json.dump(status_data, f)
+        volume.commit()
     except Exception as e:
         print(f"Warning: Could not save status to volume: {e}")
 
@@ -77,36 +102,44 @@ class AudioEnhancer:
     @modal.enter()
     def startup(self):
         """Load all AI models once at container startup"""
-        import torch
         import whisper
-        import tensorflow_hub as hub
-        
+
         logger.info("🚀 Loading AI models at startup...")
-        
-        # Load DeepFilterNet (temporarily disabled due to compatibility issues)
-        logger.warning("DeepFilterNet temporarily disabled - using enhanced noisereduce instead")
-        self.deepfilter_model = None
-        self.df_state = None
-        
+
+        # Load MossFormer2 speech enhancement (ClearerVoice-Studio)
+        try:
+            logger.info(f"Loading {CLEARVOICE_MODEL}...")
+            os.chdir(CLEARVOICE_DIR)
+            from clearvoice import ClearVoice
+            self.clearvoice = ClearVoice(task="speech_enhancement", model_names=[CLEARVOICE_MODEL])
+            logger.info(f"✅ {CLEARVOICE_MODEL} loaded successfully")
+        except Exception as e:
+            logger.warning(f"{CLEARVOICE_MODEL} loading failed: {e}")
+            self.clearvoice = None
+
         # Load Whisper
         try:
-            logger.info("Loading Whisper...")
-            self.whisper_model = whisper.load_model("base")
+            logger.info(f"Loading Whisper {WHISPER_MODEL}...")
+            self.whisper_model = whisper.load_model(WHISPER_MODEL, download_root=WHISPER_DIR)
             logger.info("✅ Whisper loaded successfully")
         except Exception as e:
             logger.warning(f"Whisper loading failed: {e}")
             self.whisper_model = None
-        
-        # Load YAMNet
+
+        # Load AST audio event classifier (AudioSet)
         try:
-            logger.info("Loading YAMNet...")
-            self.yamnet_model = hub.load('https://tfhub.dev/google/yamnet/1')
-            logger.info("✅ YAMNet loaded successfully")
+            logger.info("Loading AST sound event classifier...")
+            from transformers import ASTFeatureExtractor, ASTForAudioClassification
+            self.ast_extractor = ASTFeatureExtractor.from_pretrained(AST_MODEL)
+            self.ast_model = ASTForAudioClassification.from_pretrained(AST_MODEL).to("cuda").eval()
+            label2id = self.ast_model.config.label2id
+            self.unwanted_ids = [label2id[name] for name in UNWANTED_SOUNDS if name in label2id]
+            logger.info(f"✅ AST loaded successfully ({len(self.unwanted_ids)} unwanted classes)")
         except Exception as e:
-            logger.warning(f"YAMNet loading failed: {e}")
-            self.yamnet_model = None
-        
-        logger.info("🎉 All AI models loaded successfully!")
+            logger.warning(f"AST loading failed: {e}")
+            self.ast_model = None
+
+        logger.info("🎉 Model loading finished")
 
     @modal.method()
     def enhance_audio_processing(
@@ -164,35 +197,43 @@ class AudioEnhancer:
                 "error": None
             })
             
-            # 1. AI-Powered Noise Reduction with DeepFilterNet
+            # 1. AI-Powered Noise Reduction with MossFormer2 (48kHz)
             if enhancement_options.get("noise_reduction", True):
-                logger.info("🤖 Applying AI-powered noise reduction with DeepFilterNet...")
+                logger.info(f"🤖 Applying AI-powered noise reduction with {CLEARVOICE_MODEL}...")
                 try:
-                    # DeepFilterNet temporarily disabled - use enhanced noisereduce
-                    raise Exception("DeepFilterNet temporarily disabled")
-                    
+                    if self.clearvoice is None:
+                        raise Exception(f"{CLEARVOICE_MODEL} not loaded")
+                    with tempfile.TemporaryDirectory() as tmp_dir:
+                        noisy_path = os.path.join(tmp_dir, "noisy.wav")
+                        sf.write(noisy_path, enhanced_audio, sr, subtype='PCM_16')
+                        denoised = self.clearvoice(input_path=noisy_path, online_write=False)
+                    denoised = np.asarray(denoised, dtype=np.float32).squeeze()
+                    if denoised.ndim != 1 or len(denoised) == 0:
+                        raise Exception(f"Unexpected output shape {denoised.shape}")
+                    enhanced_audio = denoised[:len(enhanced_audio)]
+                    processing_log.append(f"✅ AI noise reduction applied ({CLEARVOICE_MODEL})")
+
                 except Exception as e:
-                    logger.warning(f"DeepFilterNet failed, falling back to noisereduce: {e}")
+                    logger.warning(f"{CLEARVOICE_MODEL} failed, falling back to noisereduce: {e}")
                     try:
                         import noisereduce as nr
-                        # 2024 Optimized Parameters for Aggressive Speech Enhancement
                         enhanced_audio = nr.reduce_noise(
-                            y=enhanced_audio, 
-                            sr=sr, 
-                            prop_decrease=1.0,          # Maximum reduction (was 0.9)
-                            stationary=False,           # Non-stationary for speech
-                            n_std_thresh_stationary=1.0,  # Lower threshold = more aggressive (was 1.5)
-                            n_fft=2048,                # Larger FFT for better frequency resolution
-                            win_length=2048,           # Matching window length
-                            hop_length=512,            # Smaller hop for better time resolution
-                            freq_mask_smooth_hz=500,   # Frequency smoothing
-                            time_mask_smooth_ms=50     # Time smoothing for speech
+                            y=enhanced_audio,
+                            sr=sr,
+                            prop_decrease=1.0,
+                            stationary=False,
+                            n_std_thresh_stationary=1.0,
+                            n_fft=2048,
+                            win_length=2048,
+                            hop_length=512,
+                            freq_mask_smooth_hz=500,
+                            time_mask_smooth_ms=50
                         )
                         processing_log.append("✅ Fallback noise reduction applied")
                     except Exception as e2:
                         logger.warning(f"All noise reduction failed: {e2}")
                         processing_log.append("⚠️ Noise reduction skipped")
-            
+
             # Update status
             save_job_status(job_id, {
                 "status": "processing",
@@ -230,7 +271,7 @@ class AudioEnhancer:
                             sf.write(temp_whisper.name, enhanced_audio, sr)
                             
                             # Transcribe with word-level timestamps
-                            result = self.whisper_model.transcribe(temp_whisper.name, word_timestamps=True)
+                            result = self.whisper_model.transcribe(temp_whisper.name, word_timestamps=True, fp16=True)
                             
                             # Common German and English filler words
                             filler_words = ['äh', 'ähm', 'eh', 'ehm', 'um', 'uh', 'like', 'you know', 'basically', 'actually']
@@ -240,7 +281,7 @@ class AudioEnhancer:
                                 for segment in result['segments']:
                                     if 'words' in segment:
                                         for word in segment['words']:
-                                            if word['word'].strip().lower() in filler_words:
+                                            if word['word'].strip().strip(string.punctuation).lower() in filler_words:
                                                 start_sample = int(word['start'] * sr)
                                                 end_sample = int(word['end'] * sr)
                                                 if start_sample < len(enhanced_audio) and end_sample <= len(enhanced_audio):
@@ -277,48 +318,41 @@ class AudioEnhancer:
                 "error": None
             })
             
-            # 3. AI Cough and Click Detection with YAMNet
+            # 3. AI Cough and Click Detection with AST (1s windows, 0.5s hop)
             if enhancement_options.get("cough_click_removal", True):
-                logger.info("🤧 Detecting and removing coughs/clicks with YAMNet...")
+                logger.info("🤧 Detecting and removing coughs/clicks with AST...")
                 try:
-                    # Use pre-loaded YAMNet model
-                    if self.yamnet_model is not None:
-                        # Prepare audio for YAMNet (expects 16kHz)
-                        yamnet_audio = librosa.resample(enhanced_audio, orig_sr=sr, target_sr=16000)
-                        
-                        # Get predictions
-                        scores, embeddings, spectrogram = self.yamnet_model(yamnet_audio)
-                        
-                        # YAMNet class indices for unwanted sounds
-                        cough_classes = [309, 310]  # Cough, Sneeze
-                        click_classes = [379, 380, 381]  # Click, Tick, Tap
-                        
-                        unwanted_classes = cough_classes + click_classes
-                        
-                        # Find segments with unwanted sounds
-                        for i, score in enumerate(scores):
-                            for class_idx in unwanted_classes:
-                                if score[class_idx] > 0.3:  # Confidence threshold
-                                    # Calculate time segment (YAMNet uses 0.96s windows)
-                                    start_time = i * 0.96
-                                    end_time = (i + 1) * 0.96
-                                    
-                                    start_sample = int(start_time * sr)
-                                    end_sample = int(end_time * sr)
-                                    
-                                    if start_sample < len(enhanced_audio) and end_sample <= len(enhanced_audio):
-                                        # Apply gentle fade to remove unwanted sound
-                                        fade_samples = int(0.1 * sr)  # 100ms fade
-                                        enhanced_audio[start_sample:start_sample+fade_samples] *= np.linspace(1, 0.1, fade_samples)
-                                        enhanced_audio[start_sample+fade_samples:end_sample-fade_samples] *= 0.1
-                                        enhanced_audio[end_sample-fade_samples:end_sample] *= np.linspace(0.1, 1, fade_samples)
-                        
-                        processing_log.append("✅ AI cough/click removal applied")
-                    else:
-                        raise Exception("YAMNet model not loaded")
-                    
+                    if self.ast_model is None:
+                        raise Exception("AST model not loaded")
+                    ast_sr = 16000
+                    ast_audio = librosa.resample(enhanced_audio, orig_sr=sr, target_sr=ast_sr)
+                    win, hop = ast_sr, ast_sr // 2
+                    starts = list(range(0, max(1, len(ast_audio) - win + 1), hop))
+                    windows = [ast_audio[st:st + win] for st in starts]
+
+                    flagged = []
+                    for i in range(0, len(windows), 16):
+                        batch = windows[i:i + 16]
+                        inputs = self.ast_extractor(batch, sampling_rate=ast_sr, return_tensors="pt").to("cuda")
+                        with torch.no_grad():
+                            probs = torch.sigmoid(self.ast_model(**inputs).logits)[:, self.unwanted_ids]
+                        for j, p in enumerate(probs.max(dim=1).values.tolist()):
+                            if p > 0.3:  # Confidence threshold
+                                flagged.append(starts[i + j] / ast_sr)
+
+                    fade_samples = int(0.1 * sr)  # 100ms fade
+                    for start_time in flagged:
+                        start_sample = int(start_time * sr)
+                        end_sample = min(len(enhanced_audio), start_sample + sr)
+                        if end_sample - start_sample > 2 * fade_samples:
+                            enhanced_audio[start_sample:start_sample+fade_samples] *= np.linspace(1, 0.1, fade_samples)
+                            enhanced_audio[start_sample+fade_samples:end_sample-fade_samples] *= 0.1
+                            enhanced_audio[end_sample-fade_samples:end_sample] *= np.linspace(0.1, 1, fade_samples)
+
+                    processing_log.append(f"✅ AI cough/click removal applied ({len(flagged)} segments)")
+
                 except Exception as e:
-                    logger.warning(f"YAMNet cough/click removal failed: {e}")
+                    logger.warning(f"AST cough/click removal failed: {e}")
                     processing_log.append("⚠️ Cough/click removal skipped")
             
             # 4. Professional Quality Enhancement Chain
@@ -452,18 +486,6 @@ class AudioEnhancer:
             save_job_status(job_id, error_result)
             return error_result
 
-# FastAPI Web App
-web_app = FastAPI(title="Audio Enhancement API")
-
-# Add CORS middleware
-web_app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 # Create class instance
 enhancer = AudioEnhancer()
 
@@ -473,7 +495,19 @@ enhancer = AudioEnhancer()
 )
 @modal.asgi_app()
 def fastapi_app():
-    
+    from fastapi import FastAPI, UploadFile, File, HTTPException, Form
+    from fastapi.responses import FileResponse, JSONResponse
+    from fastapi.middleware.cors import CORSMiddleware
+
+    web_app = FastAPI(title="Audio Enhancement API")
+    web_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
     @web_app.post("/upload/enhancement")
     async def upload_audio_enhancement(
         audio: UploadFile = File(...),
@@ -563,8 +597,8 @@ def fastapi_app():
     async def download_enhancement_file(job_id: str, filename: str):
         """Download enhanced file"""
         volume.reload()
-        file_path = Path(storage_path) / filename
-        
+        file_path = Path(storage_path) / Path(filename).name
+
         if not file_path.exists():
             raise HTTPException(404, f"File {filename} not found for job {job_id}")
         
@@ -577,7 +611,15 @@ def fastapi_app():
     @web_app.get("/health")
     async def health_check():
         """Health check endpoint"""
-        return {"status": "healthy", "service": "audio-enhancement"}
+        return {
+            "status": "healthy",
+            "service": "audio-enhancement",
+            "models": {
+                "noise_reduction": CLEARVOICE_MODEL,
+                "filler_words": f"whisper-{WHISPER_MODEL}",
+                "cough_click": "AST (AudioSet)",
+            },
+        }
     
     return web_app
 

@@ -1977,7 +1977,7 @@
                                     <div class="card-body">
                                         <!-- Enhanced Mode Toggle -->
                                         <div class="form-check form-switch mb-4">
-                                            <input class="form-check-input" type="checkbox" id="enhanced-mode" checked style="transform: scale(1.2);">
+                                            <input class="form-check-input" type="checkbox" id="enhanced-mode" style="transform: scale(1.2);">
                                             <label class="form-check-label" for="enhanced-mode" style="cursor: pointer;">
                                                 <strong>🚀 Enhanced Mode aktivieren</strong> - <em>Asteroid + DSP Enhancement</em>
                                                 <p class="small text-primary mb-0">BS-RoFormer + Neural Post-Processing + Professional DSP</p>
@@ -3077,9 +3077,9 @@
     </script>
     <script>
         // Configuration - Modal Serverless APIs
-        const API_BASE = 'https://bucci369--music-ai-separator-zfturbo-complete-fastapi-app.modal.run';
-        const HEALTH_URL = 'https://bucci369--music-ai-separator-zfturbo-complete-fastapi-app.modal.run/health';
-        const MODELS_URL = 'https://bucci369--music-ai-separator-zfturbo-complete-fastapi-app.modal.run/models';
+        const API_BASE = 'https://aliundmaggy--music-ai-separator-zfturbo-complete-fastapi-app.us-east.modal.run';
+        const HEALTH_URL = 'https://aliundmaggy--music-ai-separator-zfturbo-complete-fastapi-app.us-east.modal.run/health';
+        const MODELS_URL = 'https://aliundmaggy--music-ai-separator-zfturbo-complete-fastapi-app.us-east.modal.run/models';
         
         // 🚀 ENHANCED API with "Ultrathink" Processing - BS-RoFormer + Asteroid + DSP
         const ENHANCED_API_BASE = 'https://bucci369--music-ai-separator-enhanced-enhanced-fastapi-app.modal.run';
@@ -3087,14 +3087,14 @@
         const ENHANCED_MODELS_URL = 'https://bucci369--music-ai-separator-enhanced-enhanced-fastapi-app.modal.run/models/enhanced';
         
         // Matchering 2.0 API Configuration
-        const MATCHERING_API_BASE = 'https://bucci369--matchering-ai-mastering-matchering-app.modal.run';
-        const MATCHERING_HEALTH_URL = 'https://bucci369--matchering-ai-mastering-matchering-app.modal.run/health';
+        const MATCHERING_API_BASE = 'https://aliundmaggy--matchering-ai-mastering-matchering-app.us-east.modal.run';
+        const MATCHERING_HEALTH_URL = 'https://aliundmaggy--matchering-ai-mastering-matchering-app.us-east.modal.run/health';
         
         let selectedModel = 'mvsep_ensemble'; // MVSEP Ensemble verwenden
         let currentJobId = null;
         let models = {};
-        let isEnhancedMode = true; // 🚀 Default to Enhanced mode for best quality
-        const MODAL_API_BASE = 'https://bucci369--music-ai-separator-zfturbo-complete-fastapi-app.modal.run';
+        let isEnhancedMode = false; // Enhanced backend not deployed - classic mode
+        const MODAL_API_BASE = 'https://aliundmaggy--music-ai-separator-zfturbo-complete-fastapi-app.us-east.modal.run';
 
         // Global variables for mastering
         let targetFile = null;
@@ -3175,7 +3175,7 @@
                     console.log('✅ Separator API connected:', data);
                     
                     if (statusElement) {
-                        statusElement.innerHTML = '<i class="fas fa-check-circle text-success"></i> Verbunden mit Modal API - BS-RoFormer bereit';
+                        statusElement.innerHTML = '<i class="fas fa-check-circle text-success"></i> Verbunden mit Modal API - SCNet XL + Mel-RoFormer bereit';
                         statusElement.className = 'small text-success';
                     }
                     
@@ -3786,7 +3786,7 @@
                 console.log('🔍 Checking Enhanced API health...');
                 
                 // Skip health check if Enhanced API is not deployed yet
-                const isEnhancedDeployed = true; // ✅ Enhanced backend with asteroid is deployed!
+                const isEnhancedDeployed = false; // Enhanced backend (music-ai-separator-enhanced) is not part of this repo
                 
                 if (!isEnhancedDeployed) {
                     console.warn('⚠️ Enhanced API not deployed yet - using fallback mode');
@@ -3799,16 +3799,7 @@
                         enhancedToggle.dispatchEvent(new Event('change'));
                         
                         // Add tooltip explaining why it's disabled
-                        enhancedToggle.parentElement.title = 'Enhanced Mode wird gerade deployed...';
-                    }
-                    
-                    // Show deployment status
-                    const connectionStatus = document.getElementById('connection-status');
-                    if (connectionStatus) {
-                        connectionStatus.innerHTML = `
-                            <i class="fas fa-sync fa-spin text-primary"></i> 
-                            🚀 Enhanced API wird deployed - bitte warten...
-                        `;
+                        enhancedToggle.parentElement.title = 'Enhanced Mode ist nicht deployed - Classic Mode wird verwendet';
                     }
                     return;
                 }
@@ -5562,7 +5553,7 @@ let lastModelUsed = null;
         let transcriptionStatusInterval = null;
         
         // API Configuration for Transcription
-        const TRANSCRIPTION_API_BASE = 'https://bucci369--music-ai-transcription-complete-transcription-app.modal.run';
+        const TRANSCRIPTION_API_BASE = 'https://aliundmaggy--music-ai-transcription-complete-transcription-app.us-east.modal.run';
         
         // Test transcription connection
         async function testTranscriptionConnection() {
@@ -6680,7 +6671,7 @@ let lastModelUsed = null;
         // === AUDIO ENHANCEMENT FUNCTIONALITY ===
         
         // Enhancement API Configuration  
-        const ENHANCEMENT_API_BASE = 'https://bucci369--audio-enhancement-complete-fastapi-app.modal.run';
+        const ENHANCEMENT_API_BASE = 'https://aliundmaggy--audio-enhancement-complete-fastapi-app.us-east.modal.run';
         let currentEnhancementJobId = null;
         let lastEnhancementResult = null;
         let enhancementSelectedFile = null;

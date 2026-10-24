@@ -48,7 +48,7 @@ matchering_image = modal.Image.debian_slim(python_version="3.11").apt_install([
     "pyloudnorm>=0.1.0",  # LUFS measurement for professional mastering
     
     # FastAPI stack
-    "fastapi>=0.100.0,<0.104.0",
+    "fastapi[standard]",
     "python-multipart>=0.0.6",
     
     # Additional audio processing
@@ -937,32 +937,6 @@ def create_matchering_app():
             "mastering_intensities": ["low", "medium", "high"]
         }
 
-    @web_app.get("/download/mastering/{job_id}/{filename}")
-    async def download_mastered_file(job_id: str, filename: str):
-        """Download individual mastered file"""
-        
-        volume.reload()  # Force volume reload for latest state
-        
-        # Construct file path
-        file_path = Path(storage_path) / job_id / "output" / filename
-        
-        if not file_path.exists():
-            raise HTTPException(404, f"Mastered file not found: {filename}")
-
-        def file_iterator():
-            with open(file_path, "rb") as f:
-                while chunk := f.read(8192):
-                    yield chunk
-        
-        return StreamingResponse(
-            file_iterator(),
-            media_type="audio/wav",
-            headers={
-                "Content-Disposition": f"attachment; filename={filename}",
-                "Access-Control-Allow-Origin": "*",
-            }
-        )
-
     @web_app.get("/download/mastering/{job_id}/all.zip")
     async def download_mastered_zip(job_id: str):
         """Download all mastered files as ZIP"""
@@ -988,6 +962,32 @@ def create_matchering_app():
             media_type="application/zip",
             headers={
                 "Content-Disposition": "attachment; filename=mastered_tracks.zip",
+                "Access-Control-Allow-Origin": "*",
+            }
+        )
+
+    @web_app.get("/download/mastering/{job_id}/{filename}")
+    async def download_mastered_file(job_id: str, filename: str):
+        """Download individual mastered file"""
+        
+        volume.reload()  # Force volume reload for latest state
+        
+        # Construct file path
+        file_path = Path(storage_path) / job_id / "output" / filename
+        
+        if not file_path.exists():
+            raise HTTPException(404, f"Mastered file not found: {filename}")
+
+        def file_iterator():
+            with open(file_path, "rb") as f:
+                while chunk := f.read(8192):
+                    yield chunk
+        
+        return StreamingResponse(
+            file_iterator(),
+            media_type="audio/wav",
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
                 "Access-Control-Allow-Origin": "*",
             }
         )

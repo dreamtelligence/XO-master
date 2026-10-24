@@ -36,11 +36,11 @@ pip install modal
 modal token new
 
 # Deploy individual AI services
-modal deploy modal_app_zfturbo_complete.py      # Music Separation (BS-RoFormer)
-modal deploy modal_app_enhancement.py           # Speech Enhancement (DeepFilterNet + Whisper)
+modal deploy modal_app_zfturbo_complete.py      # Music Separation (SCNet XL IHF + Mel-Band RoFormer)
+modal deploy modal_app_enhancement.py           # Speech Enhancement (MossFormer2 + Whisper turbo + AST)
 modal deploy modal_app_matchering.py            # AI Mastering
 modal deploy modal_app_transcription.py         # Music Transcription (MIDI)
-modal deploy modal_app_audio_generation.py      # Audio Generation (AudioLDM)
+modal deploy modal_app_audio_generation.py      # Audio Generation (Stable Audio Open 1.0)
 
 # List deployed apps
 modal app list
@@ -71,11 +71,11 @@ vercel
 
 ### Modal AI Services
 Each Modal app is a standalone FastAPI service with GPU access:
-- **modal_app_zfturbo_complete.py**: BS-RoFormer model (9.65dB SDR) for music source separation
-- **modal_app_enhancement.py**: DeepFilterNet + Whisper for speech enhancement
+- **modal_app_zfturbo_complete.py**: SCNet XL IHF (4 stems) + Mel-Band RoFormer KJ (vocals/instrumental), weights baked into the image
+- **modal_app_enhancement.py**: MossFormer2_SE_48K + Whisper large-v3-turbo + AST for speech enhancement (no TensorFlow: TF + torch in one process segfaulted)
 - **modal_app_matchering.py**: Professional audio mastering chain
-- **modal_app_transcription.py**: basic-pitch + madmom + essentia for MIDI transcription
-- **modal_app_audio_generation.py**: AudioLDM for text-to-audio generation
+- **modal_app_transcription.py**: MuScriptor large (melody + drums) + beat_this + essentia (chords, key) for MIDI transcription
+- **modal_app_audio_generation.py**: Stable Audio Open 1.0 for text-to-audio generation (no frontend UI yet)
 
 ### Frontend Structure
 - **index.html**: Single-page application with all services
@@ -169,12 +169,14 @@ Modal services have configuration at top of each file:
 
 - **Production Domain**: `studio.kleindigitalsolutions.de`
 - **Vercel Deployment**: Auto-deploys from git push
-- **Modal Endpoints**: `https://bucci369--<app-name>-fastapi-app.modal.run`
+- **Modal Endpoints**: `https://aliundmaggy--<app-name>-<function>.us-east.modal.run` (workspace `aliundmaggy`)
+- **Gated models**: Modal secret `huggingface` (HF account Bucci369) must have accepted MuScriptor large + Stable Audio Open
+- **Licenses**: MuScriptor weights are CC BY-NC 4.0 -> private/non-commercial use only
 - **Stripe Allowed Domains**: Configured in Stripe Dashboard
 
 ## Performance Characteristics
 
-- **BS-RoFormer Separation**: 45-120s processing (depends on audio length)
+- **Separation**: ~60s for a 30s track when warm
 - **Speech Enhancement**: 15-30s processing
 - **AI Mastering**: 30-60s processing
 - **Music Transcription**: 20-45s processing

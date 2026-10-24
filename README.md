@@ -22,7 +22,7 @@ This is a **production-ready, full-stack AI music platform** that I built to exp
 **Why I built this:**
 - Learn serverless GPU computing with Modal Labs
 - Implement a complete payment system with Stripe
-- Work with cutting-edge AI models (BS-RoFormer, DeepFilterNet, Whisper AI)
+- Work with cutting-edge AI models (SCNet, Mel-Band RoFormer, MuScriptor, MossFormer2, Whisper, Stable Audio Open)
 - Build a production-ready SPA without frameworks (vanilla JS)
 - Practice database design with Row-Level Security
 - Deploy scalable ML services on NVIDIA A10G GPUs
@@ -35,11 +35,11 @@ This is a **production-ready, full-stack AI music platform** that I built to exp
 
 | Service | AI Model | Quality Metric | Use Case |
 |---------|----------|----------------|----------|
-| **🎵 Music Source Separation** | BS-RoFormer (ZFTurbo) | **9.65dB SDR** | Isolate vocals, drums, bass, instruments |
+| **🎵 Music Source Separation** | SCNet XL IHF + Mel-Band RoFormer (ZFTurbo) | **9.92dB SDR avg, vocals 10.98dB** | Isolate vocals, drums, bass, instruments |
 | **🎛️ AI Audio Mastering** | Professional Audio Chain | Broadcast Standard | Professional music mastering |
-| **🎼 Music Transcription** | basic-pitch + madmom + essentia | Producer-Ready MIDI | Convert audio → MIDI |
-| **🎙️ Speech Enhancement** | DeepFilterNet + Whisper | Studio Quality | Podcast & voice processing |
-| **🎧 Audio Generation** | AudioLDM-L-Full (975M params) | High Fidelity | Text-to-audio generation |
+| **🎼 Music Transcription** | MuScriptor large + beat_this + essentia | Multi-instrument MIDI, key, chords, beats | Convert audio → MIDI |
+| **🎙️ Speech Enhancement** | MossFormer2_SE_48K + Whisper large-v3-turbo + AST | Studio Quality | Podcast & voice processing |
+| **🎧 Audio Generation** | Stable Audio Open 1.0 | 44.1kHz stereo, up to 47s | Text-to-audio generation |
 
 ### 💎 Technical Highlights
 
@@ -62,11 +62,11 @@ graph TB
     B --> D[Supabase PostgreSQL<br/>Credit Management + RLS]
     B --> E[Modal Serverless Platform<br/>GPU Orchestration]
     E --> F[NVIDIA A10G GPU Cluster<br/>24GB VRAM]
-    F --> G[BS-RoFormer<br/>Music Separation]
-    F --> H[DeepFilterNet + Whisper<br/>Speech Enhancement]
-    F --> I[AudioLDM<br/>Audio Generation]
-    F --> J[Matchering<br/>AI Mastering]
-    F --> K[basic-pitch + madmom<br/>Transcription]
+    F --> G[SCNet + Mel-Band RoFormer<br/>Music Separation]
+    F --> H[MossFormer2 + Whisper<br/>Speech Enhancement]
+    F --> I[Stable Audio Open<br/>Audio Generation]
+    F --> J[pedalboard chain<br/>AI Mastering]
+    F --> K[MuScriptor + beat_this<br/>Transcription]
 ```
 
 ### Tech Stack
@@ -87,12 +87,14 @@ graph TB
 
 **AI/ML Stack:**
 ```python
-BS-RoFormer (ZFTurbo)      # State-of-the-art music separation
-DeepFilterNet              # AI noise reduction
-Whisper (OpenAI)           # Speech-to-text + enhancement
-AudioLDM (975M params)     # Text-to-audio generation
-basic-pitch (Spotify)      # Melody transcription
-madmom + essentia          # Music analysis
+SCNet XL IHF (ZFTurbo)     # 4-stem music separation
+Mel-Band RoFormer (KJ)     # Vocals / instrumental
+MossFormer2_SE_48K         # AI noise reduction (ClearerVoice-Studio)
+Whisper large-v3-turbo     # Filler word detection
+AST (AudioSet)             # Cough / click detection
+Stable Audio Open 1.0      # Text-to-audio generation
+MuScriptor large           # Multi-instrument transcription (incl. drums)
+beat_this + essentia       # Beats, chords, key
 ```
 
 ---
@@ -146,6 +148,22 @@ modal deploy modal_app_audio_generation.py      # Audio Generation
 # Verify deployments
 modal app list
 ```
+
+**Before the first deploy:**
+
+1. Create a Hugging Face token and accept the licenses of the gated models with that account:
+   [MuScriptor large](https://huggingface.co/MuScriptor/muscriptor-large) (CC BY-NC 4.0) and
+   [Stable Audio Open 1.0](https://huggingface.co/stabilityai/stable-audio-open-1.0).
+2. Store the token as a Modal secret: `modal secret create huggingface HF_TOKEN=hf_...`
+3. After deploying, replace the Modal URLs in `index.html` (`API_BASE`, `HEALTH_URL`, `MODELS_URL`,
+   `MODAL_API_BASE`, `MATCHERING_API_BASE`, `TRANSCRIPTION_API_BASE`, `ENHANCEMENT_API_BASE`) with the ones
+   `modal deploy` prints for your workspace (`https://<workspace>--<app>-<function>.<region>.modal.run`).
+
+All model weights except MuScriptor are downloaded at image build time; MuScriptor is cached in the
+`muscriptor-hf-cache` volume on first use. The first build of each image takes a few minutes.
+
+**Local use without login/credits:** serve the folder (`python3 -m http.server 8765`), open it and run
+`localStorage.setItem('klein_admin_mode', 'enabled')` once in the browser console to bypass the paywall.
 
 ### Environment Variables
 
@@ -226,7 +244,7 @@ CREATE POLICY "Service role can manage users" ON credit_users
 ### Performance Optimization
 
 **GPU Processing Times:**
-- BS-RoFormer (Music Separation): 45-120s
+- SCNet + Mel-Band RoFormer (Music Separation): ~60s for a 30s track (warm), plus cold start
 - Speech Enhancement: 15-30s
 - AI Mastering: 30-60s
 - Music Transcription: 20-45s
@@ -292,7 +310,7 @@ XO-master/
 │   ├── webhook.js                      # Stripe webhook handler
 │   ├── create-checkout-session.js      # Payment session creation
 │   └── paywall.js                      # Credit verification
-├── modal_app_zfturbo_complete.py       # BS-RoFormer music separation
+├── modal_app_zfturbo_complete.py       # SCNet + Mel-Band RoFormer music separation
 ├── modal_app_enhancement.py            # Speech enhancement service
 ├── modal_app_matchering.py             # AI mastering service
 ├── modal_app_transcription.py          # Music transcription service
@@ -370,11 +388,25 @@ This project is licensed under the MIT License - see [LICENSE](./LICENSE) file f
 ## 🙏 Acknowledgments
 
 ### AI Models & Research
-- **ZFTurbo** - [BS-RoFormer](https://github.com/ZFTurbo/Music-Source-Separation-Training) (9.65dB SDR)
-- **Rikorose** - [DeepFilterNet](https://github.com/Rikorose/DeepFilterNet) noise reduction
+- **ZFTurbo** - [Music-Source-Separation-Training](https://github.com/ZFTurbo/Music-Source-Separation-Training) (SCNet XL IHF, Mel-Band RoFormer by KimberleyJensen)
+- **Alibaba / ModelScope** - [ClearerVoice-Studio](https://github.com/modelscope/ClearerVoice-Studio) MossFormer2 noise reduction
 - **OpenAI** - [Whisper](https://github.com/openai/whisper) speech recognition
-- **Spotify** - [basic-pitch](https://github.com/spotify/basic-pitch) MIDI transcription
-- **Stability AI** - AudioLDM text-to-audio model
+- **MIT** - [AST](https://huggingface.co/MIT/ast-finetuned-audioset-10-10-0.4593) audio event classification
+- **Kyutai x Mirelo** - [MuScriptor](https://github.com/muscriptor/muscriptor) multi-instrument transcription
+- **CPJKU** - [beat_this](https://github.com/CPJKU/beat_this) beat tracking
+- **Stability AI** - [Stable Audio Open 1.0](https://huggingface.co/stabilityai/stable-audio-open-1.0) text-to-audio
+
+### Model licenses (private / non-commercial use)
+
+| Model | License |
+|-------|---------|
+| MuScriptor weights | CC BY-NC 4.0 (non-commercial) - gated, accept on Hugging Face |
+| Stable Audio Open 1.0 | Stability AI Community License (free below USD 1M revenue) - gated |
+| Mel-Band RoFormer (KJ), SCNet XL IHF | released with the MIT-licensed ZFTurbo repo |
+| MossFormer2, beat_this, Whisper | Apache 2.0 / MIT / MIT |
+| AST (AudioSet) | BSD-3-Clause |
+
+The gated models need a Modal secret named `huggingface` with `HF_TOKEN` of an account that accepted the licenses.
 
 ### Infrastructure & Tools
 - [Modal Labs](https://modal.com) - Serverless GPU computing

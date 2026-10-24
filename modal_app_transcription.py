@@ -1,29 +1,26 @@
 #!/usr/bin/env python3
 """
 Klein Digital Solutions - Music AI Transcription Service
-Complete Professional Music Transcription for Producers & Musicians
+Complete Music Transcription for Producers & Musicians
 
 Features:
-- basic-pitch (Spotify): Melodie/Instrumente -> MIDI-Noten fuer VST-Instrumente  
-- madmom: Drums -> MIDI-Grid zum Austauschen von Samples
-- essentia: Akkorde (Chords) -> Harmonische Analyse fuer Songwriting & Remixe
-- madmom: Beat/Tempo -> Perfekter Click-Track fuer die DAW
+- MuScriptor large (Kyutai x Mirelo): multi-instrument audio -> MIDI (melody/instruments + real drum kit notes)
+- beat_this (CPJKU): beats, downbeats and tempo -> click track for the DAW
+- essentia: chord recognition (HPCP + ChordsDetection) and key detection (KeyExtractor)
 
-Modal Serverless Deployment with GPU optimization
-Professional error handling and monitoring
+License note: the MuScriptor weights are CC BY-NC 4.0 (non-commercial, private use only).
+They are gated on Hugging Face: the account behind the "huggingface" Modal secret
+must have accepted the license on https://huggingface.co/MuScriptor/muscriptor-large.
 """
 
 import modal
-import os
 from pathlib import Path
-import tempfile
 import uuid
 import subprocess
 import time
 import json
 import zipfile
 import io
-import numpy as np
 import shutil
 
 # Global storage for job status tracking
@@ -36,86 +33,67 @@ app = modal.App("music-ai-transcription-complete")
 volume = modal.Volume.from_name("music-transcription-storage", create_if_missing=True)
 storage_path = "/vol/transcription_files"
 
-# ===================================================================
-# PROFESSIONAL IMAGE DEFINITION FOR MUSIC TRANSCRIPTION
-# ===================================================================
+# Hugging Face cache for the gated MuScriptor weights (downloaded on first use)
+hf_cache = modal.Volume.from_name("muscriptor-hf-cache", create_if_missing=True)
+HF_CACHE_PATH = "/cache/hf"
 
-transcription_image = modal.Image.debian_slim(python_version="3.9").apt_install([
-    # System dependencies
-    "ffmpeg",
-    "libsndfile1",
-    "libsndfile1-dev", 
-    "build-essential",
-    "python3-dev",
-    "pkg-config",
-    "portaudio19-dev",
-    "libflac-dev",
-    "git",
-    "fluidsynth",
-    "libportaudio2"
-]).pip_install([
-    # Core dependencies first - NumPy pinned for madmom compatibility (pre-1.24)
-    "numpy>=1.21.0,<1.24.0",  # CRITICAL: madmom requires NumPy <1.24 (np.float deprecated)
-    "scipy>=1.7.0", 
-    "soundfile>=0.12.1",
-    "Cython>=0.29.0",
-]).pip_install([
-    # Libraries that need Cython
-    "madmom>=0.16.1",           # Beat tracking and drum transcription
-]).pip_install([
-    # Other dependencies
-    "librosa>=0.9.0",
-    "mir_eval>=0.7",
-    "basic-pitch>=0.4.0",       # Spotify's melody/instrument transcription
-    "essentia-tensorflow",      # Chord recognition
-    
-    # MIDI processing
-    "pretty_midi>=0.2.10",
-    "mido>=1.2.10",
-    "music21>=8.1.0",
-    
-    # Audio processing 
-    "pydub>=0.25.1",
-    "audioread>=3.0.0",
-    
-    # FastAPI stack
-    "fastapi>=0.100.0,<0.104.0",
-    "python-multipart>=0.0.6",
-    "uvicorn[standard]>=0.23.0",
-    
-    # Additional utilities
-    "requests>=2.28.0",
-    "matplotlib>=3.5.0",
-    "pandas>=1.5.0"
-])
+MUSCRIPTOR_MODEL = "large"
+SOUNDFONT = "/usr/share/sounds/sf2/FluidR3_GM.sf2"
+
+
+def _prefetch_beat_this():
+    from beat_this.inference import File2Beats
+    File2Beats(checkpoint_path="final0", device="cpu", dbn=False)
+
+
+transcription_image = (
+    modal.Image.debian_slim(python_version="3.12")
+    .apt_install(["ffmpeg", "libsndfile1", "fluidsynth", "fluid-soundfont-gm"])
+    .pip_install([
+        "muscriptor",
+        "beat-this",
+        "essentia==2.1b6.dev1389",
+        "pretty_midi",
+        "mido",
+        "soundfile",
+        "fastapi[standard]",
+        "python-multipart",
+    ])
+    .env({"HF_HUB_CACHE": HF_CACHE_PATH})
+    .run_function(_prefetch_beat_this)
+)
+
+with transcription_image.imports():
+    import numpy as np
 
 # Transcription configuration for producers
 TRANSCRIPTION_CONFIG = {
     "melody": {
-        "library": "basic-pitch", 
-        "description": "Melodie/Instrumente -> MIDI-Noten fuer VST-Instrumente",
+        "library": "MuScriptor large",
+        "description": "Melodie/Instrumente -> MIDI-Noten fuer VST-Instrumente (alle Instrumente getrennt)",
         "output_formats": ["midi", "json"],
-        "producer_benefit": "Perfekte MIDI-Noten zum Laden in VSTs, Harmonizer & Synthesizer"
+        "producer_benefit": "MIDI-Spuren je Instrument zum Laden in VSTs, Harmonizer & Synthesizer"
     },
     "drums": {
-        "library": "madmom",
-        "description": "Drums -> MIDI-Grid zum Austauschen von Samples", 
+        "library": "MuScriptor large",
+        "description": "Drums -> MIDI (Kick, Snare, Hi-Hat, Toms, Becken) zum Austauschen von Samples",
         "output_formats": ["midi", "json"],
-        "producer_benefit": "Drum-Pattern als MIDI fuer Sample-Replacement in DAW"
+        "producer_benefit": "Echtes Drum-Pattern als MIDI fuer Sample-Replacement in der DAW"
     },
     "chords": {
         "library": "essentia",
-        "description": "Akkorde -> Harmonische Analyse fuer Songwriting & Remixe",
+        "description": "Akkorde + Tonart -> Harmonische Analyse fuer Songwriting & Remixe",
         "output_formats": ["midi", "json", "txt"],
-        "producer_benefit": "Chord-Progressionen fuer Remixe, Covers & neue Arrangements"
+        "producer_benefit": "Chord-Progressionen und Tonart fuer Remixe, Covers & neue Arrangements"
     },
     "beat": {
-        "library": "madmom", 
-        "description": "Beat/Tempo -> Perfekter Click-Track fuer die DAW",
+        "library": "beat_this",
+        "description": "Beat/Tempo -> Click-Track fuer die DAW",
         "output_formats": ["json", "txt", "midi"],
-        "producer_benefit": "Exakte BPM + Grid fuer perfekte Synchronisation in der DAW"
+        "producer_benefit": "BPM + Grid fuer Synchronisation in der DAW"
     }
 }
+
 
 def save_job_status(job_id: str, status_data: dict):
     """Save job status to volume for persistence"""
@@ -128,6 +106,7 @@ def save_job_status(job_id: str, status_data: dict):
     except Exception as e:
         print(f"Error saving transcription job status: {e}")
 
+
 def update_job_progress(job_id: str, progress: int, phase: str, additional_data: dict = None):
     """Helper to update job progress with additional data"""
     status_data = {
@@ -139,16 +118,18 @@ def update_job_progress(job_id: str, progress: int, phase: str, additional_data:
     }
     if additional_data:
         status_data.update(additional_data)
-    
+
     job_status[job_id] = status_data
     save_job_status(job_id, status_data)
 
+
 @app.function(
     image=transcription_image,
-    gpu="a10g",  # GPU for basic-pitch optimization
-    timeout=2400,  # OPTIMIZED: 40 minutes for complex transcriptions (was 1800)
-    memory=32768,  # OPTIMIZED: 32GB for complex multi-track analysis (was 16384)
-    volumes={storage_path: volume},
+    gpu="a10g",
+    timeout=2400,
+    memory=32768,
+    volumes={storage_path: volume, HF_CACHE_PATH: hf_cache},
+    secrets=[modal.Secret.from_name("huggingface")],
     scaledown_window=120
 )
 def transcribe_complete_audio(
@@ -158,473 +139,224 @@ def transcribe_complete_audio(
     tasks: dict = None  # {"melody": True, "drums": True, "chords": True, "beat": True}
 ) -> dict:
     """
-    Complete professional music transcription for producers
-    Returns all formats needed for professional music production
+    Complete music transcription for producers
+    Returns all formats needed for music production
     """
-    import time  # Ensure time is available in function scope
-    
-    # CRITICAL: Monkey patch for madmom NumPy compatibility
-    import numpy as np
-    if not hasattr(np, 'float'):
-        np.float = float
-        np.int = int
-        np.bool = bool
-        print("DEBUG: Applied NumPy compatibility monkey patch for madmom")
-    
     start_time = time.time()
-    
-    # Default to all tasks if not specified
+
     if tasks is None:
         tasks = {"melody": True, "drums": True, "chords": True, "beat": True}
-    
-    # Set initial job status
+
     update_job_progress(job_id, 5, "Initialisierung - Audio wird geladen")
-    
+
     try:
-        # Setup directories
         job_dir = Path(storage_path) / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
-        
+
         input_file = job_dir / filename
         input_file.write_bytes(audio_data)
-        
+
         output_dir = job_dir / "output"
         output_dir.mkdir(exist_ok=True)
-        
         final_output_dir = output_dir / "final"
         final_output_dir.mkdir(exist_ok=True)
-        
-        print(f"Starting complete music transcription for job {job_id}")
-        print(f"Input: {input_file} ({len(audio_data) // 1024} KB)")
+
+        print(f"Starting music transcription for job {job_id}")
         print(f"Tasks: {[task for task, enabled in tasks.items() if enabled]}")
-        
-        # Convert to WAV for processing
+
         update_job_progress(job_id, 10, "Audio-Konvertierung zu WAV")
-        
         wav_file = job_dir / "input.wav"
-        file_ext = Path(filename).suffix.lower()
-        
-        if file_ext != ".wav":
-            # OPTIMIZED audio conversion with better quality and filtering
-            ffmpeg_cmd = [
-                "ffmpeg", "-y",
-                "-i", str(input_file),
-                "-ar", "44100",                                    # Standard sample rate
-                "-ac", "2",                                        # Stereo for full processing
-                "-af", "highpass=f=20,lowpass=f=20000",            # OPTIMIZED: Audio cleaning filters
-                "-q:a", "0",                                       # OPTIMIZED: Lossless quality
-                str(wav_file)
-            ]
-            
-            try:
-                subprocess.run(ffmpeg_cmd, check=True, capture_output=True, timeout=120)
-                print(f"Converted {filename} to WAV")
-            except Exception as e:
-                raise Exception(f"Audio conversion failed: {e}")
-        else:
-            shutil.copy2(input_file, wav_file)
-            print(f"Using WAV file directly: {wav_file}")
-        
-        # OPTIMIZED mono version creation with better quality
         mono_wav_file = job_dir / "input_mono.wav"
-        ffmpeg_mono_cmd = [
-            "ffmpeg", "-y",
-            "-i", str(wav_file),
-            "-ar", "44100",
-            "-ac", "1",                                        # Mono
-            "-af", "highpass=f=20,lowpass=f=20000",            # OPTIMIZED: Same filtering for consistency
-            "-q:a", "0",                                       # OPTIMIZED: Lossless quality
-            str(mono_wav_file)
-        ]
-        subprocess.run(ffmpeg_mono_cmd, check=True, capture_output=True, timeout=60)
-        
+        try:
+            subprocess.run(["ffmpeg", "-y", "-i", str(input_file), "-ar", "44100", "-ac", "2", str(wav_file)],
+                           check=True, capture_output=True, timeout=120)
+            subprocess.run(["ffmpeg", "-y", "-i", str(wav_file), "-ar", "44100", "-ac", "1", str(mono_wav_file)],
+                           check=True, capture_output=True, timeout=120)
+        except subprocess.CalledProcessError as e:
+            raise Exception(f"Audio conversion failed: {e.stderr.decode(errors='ignore')[-500:]}")
         volume.commit()
-        
-        # ===================================================================
-        # TASK 1: MELODY/INSTRUMENT TRANSCRIPTION (basic-pitch)
-        # ===================================================================
-        
+
         output_files = []
         completed_tasks = []
-        
-        if tasks.get("melody", False):
-            update_job_progress(job_id, 20, "Melodie-Transkription (basic-pitch) - Spotify Technologie")
-            
+        task_errors = {}
+        primary_tempo = None
+
+        # ===================================================================
+        # TASK 1+2: MELODY/INSTRUMENTS + DRUMS (MuScriptor, one pass)
+        # ===================================================================
+
+        if tasks.get("melody") or tasks.get("drums"):
+            update_job_progress(job_id, 20, f"Noten-Transkription (MuScriptor {MUSCRIPTOR_MODEL}) - alle Instrumente")
             try:
-                print("Starting basic-pitch melody/instrument transcription...")
-                
-                # Import basic-pitch
-                from basic_pitch.inference import predict_and_save
-                from basic_pitch import ICASSP_2022_MODEL_PATH
-                
-                # Create melody output directory
-                melody_dir = output_dir / "melody"
-                melody_dir.mkdir(exist_ok=True)
-                
-                # Run basic-pitch transcription with OPTIMIZED parameters for music production
-                predict_and_save(
-                    audio_path_list=[str(wav_file)],
-                    output_directory=str(melody_dir),
-                    save_midi=True,
-                    sonify_midi=False,
-                    save_model_outputs=True,   # For debug/analysis - OPTIMIZED
-                    save_notes=True,           # Also save notes as JSON
-                    model_or_model_path=ICASSP_2022_MODEL_PATH,
-                    # OPTIMIZED parameters for better melody extraction:
-                    minimum_note_length=0.1,   # Filter very short notes for cleaner MIDI
-                    minimum_frequency=80.0,    # Focus on melodic instruments (exclude sub-bass)
-                    maximum_frequency=2000.0   # Exclude very high frequencies for cleaner results
-                )
-                
-                # Find and rename output files
-                stem_name = wav_file.stem
-                generated_midi = melody_dir / f"{stem_name}_basic_pitch.mid"
-                generated_notes = melody_dir / f"{stem_name}_basic_pitch.json"
-                
-                if generated_midi.exists():
-                    final_midi = final_output_dir / "melody_notes.mid"
-                    shutil.move(str(generated_midi), str(final_midi))
-                    output_files.append("melody_notes.mid")
-                    print("Melody MIDI created for VST loading")
-                    # Immediate volume commit to persist file
-                    volume.commit()
-                    print(f"DEBUG: Volume committed after melody MIDI creation")
-                
-                if generated_notes.exists():
-                    final_notes = final_output_dir / "melody_notes.json"
-                    shutil.move(str(generated_notes), str(final_notes))
-                    output_files.append("melody_notes.json")
-                    print("Melody notes JSON created")
-                    # Immediate volume commit to persist file
-                    volume.commit()
-                    print(f"DEBUG: Volume committed after melody JSON creation")
-                
-                # Create additional producer-friendly formats
-                if generated_midi.exists() or final_midi.exists():
-                    # Create a simplified MIDI for easier editing
-                    create_producer_midi_summary(final_midi if final_midi.exists() else generated_midi, 
-                                               final_output_dir / "melody_simplified.mid")
-                    output_files.append("melody_simplified.mid")
-                
-                completed_tasks.append("melody")
-                print("Melody transcription completed - Ready for VST import!")
-                
+                full_midi = output_dir / "muscriptor_full.mid"
+                cmd = [
+                    "muscriptor", "transcribe", str(wav_file),
+                    "--model", MUSCRIPTOR_MODEL,
+                    "--device", "cuda",
+                    "--output", str(full_midi),
+                ]
+                print(f"Running: {' '.join(cmd)}")
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+                hf_cache.commit()
+                if result.returncode != 0 or not full_midi.exists():
+                    stderr = result.stderr[-2000:]
+                    if "GatedRepo" in stderr or "403" in stderr or "gated" in stderr.lower():
+                        raise Exception("MuScriptor-Lizenz auf Hugging Face noch nicht akzeptiert: "
+                                        "https://huggingface.co/MuScriptor/muscriptor-large")
+                    raise Exception(f"MuScriptor failed: {stderr}")
+
+                shutil.copy2(full_midi, final_output_dir / "full_transcription.mid")
+                output_files.append("full_transcription.mid")
+                instruments = split_muscriptor_midi(full_midi, final_output_dir)
+
+                if tasks.get("melody"):
+                    if instruments["melodic"]:
+                        output_files += ["melody_notes.mid", "melody_simplified.mid", "melody_notes.json"]
+                        completed_tasks.append("melody")
+                    else:
+                        task_errors["melody"] = "Keine melodischen Instrumente erkannt"
+
+                if tasks.get("drums"):
+                    update_job_progress(job_id, 45, "Drum-Noten werden exportiert")
+                    if instruments["drums"]:
+                        output_files += ["drums_pattern.mid", "drums_timing.json"]
+                        completed_tasks.append("drums")
+                    else:
+                        task_errors["drums"] = "Kein Schlagzeug erkannt"
+                volume.commit()
+                print(f"MuScriptor done: {instruments}")
+
             except Exception as e:
-                print(f"Melody transcription failed: {e}")
-        
+                print(f"MuScriptor transcription failed: {e}")
+                for t in ("melody", "drums"):
+                    if tasks.get(t):
+                        task_errors[t] = str(e)
+
         # ===================================================================
-        # TASK 2: DRUM TRANSCRIPTION (madmom)
+        # TASK 3: CHORDS + KEY (essentia)
         # ===================================================================
-        
-        if tasks.get("drums", False):
-            update_job_progress(job_id, 40, "Drum-Transkription (madmom) - MIDI-Grid fuer Sample-Replacement")
-            
+
+        if tasks.get("chords"):
+            update_job_progress(job_id, 60, "Akkord- und Tonart-Erkennung (essentia)")
             try:
-                print("Starting madmom drum transcription...")
-                
-                # Import madmom
-                import madmom
-                
-                # Create drums output directory
-                drums_dir = output_dir / "drums"
-                drums_dir.mkdir(exist_ok=True)
-                
-                # Use mono file for drum detection
-                audio_file_for_drums = str(mono_wav_file)
-                
-                # OPTIMIZED drum onset detection for better drum pattern extraction
-                print("Detecting drum onsets with optimized parameters...")
-                proc = madmom.features.onsets.CNNOnsetProcessor()
-                onsets = proc(audio_file_for_drums)
-                
-                # OPTIMIZED peak picking for precise drum timing (2025 Research)
-                peak_picker = madmom.features.onsets.OnsetPeakPickingProcessor(
-                    threshold=0.5,      # CNN-optimal threshold for clean drum detection
-                    combine=0.02,       # Shorter combine time for fast drums (was 0.03) 
-                    pre_max=0.01,       # Better onset localization
-                    post_max=0.01,      # Better onset localization
-                    pre_avg=0.05,       # Improved averaging for stability
-                    post_avg=0.05,      # Improved averaging for stability
-                    smooth=0.0          # No smoothing for precise drum hits
-                )
-                drum_onsets = peak_picker(onsets)
-                
-                # Create drum MIDI
-                drum_midi_path = final_output_dir / "drums_pattern.mid"
-                create_drum_midi(drum_onsets, drum_midi_path)
-                output_files.append("drums_pattern.mid")
-                
-                # Create JSON with drum timing for DAW import
-                drum_json = {
-                    "drum_onsets": drum_onsets.tolist(),
-                    "total_duration": len(onsets) * 0.01,  # madmom default hop size
-                    "sample_rate": 44100,
-                    "producer_note": "Import MIDI to replace with your drum samples in DAW"
-                }
-                
-                drum_json_path = final_output_dir / "drums_timing.json"
-                with open(drum_json_path, 'w') as f:
-                    json.dump(drum_json, f, indent=2)
-                output_files.append("drums_timing.json")
-                
-                completed_tasks.append("drums")
-                print("Drum transcription completed - Ready for sample replacement!")
-                
-            except Exception as e:
-                print(f"Drum transcription failed: {e}")
-        
-        # ===================================================================
-        # TASK 3: CHORD RECOGNITION (essentia)
-        # ===================================================================
-        
-        if tasks.get("chords", False):
-            update_job_progress(job_id, 60, "Akkord-Erkennung (essentia) - Harmonische Analyse")
-            
-            try:
-                print("Starting essentia chord recognition...")
-                
-                # Import essentia with proper error handling
-                import essentia.standard as es
-                import essentia
-                
-                # Create chords output directory  
-                chords_dir = output_dir / "chords"
-                chords_dir.mkdir(exist_ok=True)
-                
-                # Load audio with essentia
-                loader = es.MonoLoader(filename=str(mono_wav_file), sampleRate=44100)
-                audio = loader()
-                
-                # OPTIMIZED HPCP computation pipeline for better chord recognition
-                framecutter = es.FrameCutter(
-                    frameSize=8192,     # Higher resolution for better frequency analysis (was 4096)
-                    hopSize=1024,       # Better time resolution for chord changes (was 2048)
-                    silentFrames='noise'
-                )
-                windowing = es.Windowing(type='blackmanharris62')
-                spectrum = es.Spectrum()
-                spectralpeaks = es.SpectralPeaks(
-                    orderBy='magnitude', 
-                    magnitudeThreshold=0.0001,   # More sensitive detection (was 0.00001)
-                    minFrequency=80,             # Optimized for music production (was 20)
-                    maxFrequency=4000,           # Extended for complex harmonies (was 3500)
-                    maxPeaks=100                 # More peaks for better chord detection (was 60)
-                )
-                hpcp = es.HPCP(
-                    size=36,                     # Higher resolution for precise chords (default was 12)
-                    referenceFrequency=440,      # Standard tuning reference
-                    harmonics=8,                 # More harmonics for better recognition (default was 4)
-                    bandPreset=False,            # Custom frequency settings
-                    minFrequency=80,             # Match spectral peaks settings
-                    maxFrequency=4000,           # Match spectral peaks settings
-                    weightType='cosine'          # Cosine weighting for better harmonic analysis
-                )
-                
-                # Compute HPCPs frame by frame
-                hpcp_frames = []
-                for frame in framecutter(audio):
-                    windowed = windowing(frame)
-                    spec = spectrum(windowed)
-                    peaks_mag, peaks_freq = spectralpeaks(spec)
-                    hpcp_frame = hpcp(peaks_mag, peaks_freq)
-                    hpcp_frames.append(hpcp_frame)
-                
-                # Convert to essentia array format - this fixes the VectorVectorReal error
-                hpcp_array = essentia.array(hpcp_frames)
-                
-                # OPTIMIZED chord detection with better temporal resolution
-                chords_detector = es.ChordsDetection(
-                    hopSize=1024,                # Better temporal resolution (was 2048)
-                    windowSize=3                 # Extended window for stability (was 2)
-                )
-                chords, strength = chords_detector(hpcp_array)
-                
-                # Create chord progression file for producers
-                chord_progression = analyze_chord_progression(chords, strength)
-                
-                # Save chord MIDI for DAW import
+                chord_progression, key_info = analyze_chords_and_key(mono_wav_file)
+
                 chord_midi_path = final_output_dir / "chord_progression.mid"
                 create_chord_midi(chord_progression, chord_midi_path)
                 output_files.append("chord_progression.mid")
-                
-                # Save detailed JSON analysis
+
                 chord_analysis = {
+                    "key": key_info,
                     "chord_progression": chord_progression,
-                    "raw_chords": chords,
-                    "confidence": strength.tolist(),
                     "analysis": {
-                        "key_signature": detect_key_signature(chord_progression),
-                        "common_progressions": find_common_progressions(chord_progression),
-                        "producer_tips": generate_producer_tips(chord_progression)
+                        "unique_chords": sorted({c["chord"] for c in chord_progression}),
+                        "producer_tips": generate_producer_tips(chord_progression, key_info)
                     }
                 }
-                
-                chord_json_path = final_output_dir / "chord_analysis.json"
-                with open(chord_json_path, 'w') as f:
+                with open(final_output_dir / "chord_analysis.json", 'w') as f:
                     json.dump(chord_analysis, f, indent=2)
                 output_files.append("chord_analysis.json")
-                
-                # Create human-readable chord chart
-                chord_chart_path = final_output_dir / "chord_chart.txt"
-                create_chord_chart(chord_progression, chord_chart_path)
+
+                create_chord_chart(chord_progression, key_info, final_output_dir / "chord_chart.txt")
                 output_files.append("chord_chart.txt")
-                
+
                 completed_tasks.append("chords")
-                print("Chord analysis completed - Ready for songwriting & remixes!")
-                
+                print(f"Chord analysis completed - key {key_info['key']} {key_info['scale']}")
+
             except Exception as e:
                 print(f"Chord recognition failed: {e}")
-        
+                task_errors["chords"] = str(e)
+
         # ===================================================================
-        # TASK 4: BEAT/TEMPO TRACKING (madmom)
+        # TASK 4: BEAT/TEMPO (beat_this)
         # ===================================================================
-        
-        if tasks.get("beat", False):
-            update_job_progress(job_id, 80, "Beat/Tempo-Analyse (madmom) - Click-Track fuer DAW")
-            
+
+        if tasks.get("beat"):
+            update_job_progress(job_id, 80, "Beat/Tempo-Analyse (beat_this) - Click-Track fuer DAW")
             try:
-                print("Starting madmom beat/tempo analysis...")
-                
-                # Import madmom
-                import madmom
-                
-                # Create beat output directory
-                beat_dir = output_dir / "beat"
-                beat_dir.mkdir(exist_ok=True)
-                
-                # OPTIMIZED beat tracking with higher precision for music production
-                print("Analyzing beats and tempo with enhanced precision...")
-                proc = madmom.features.beats.DBNBeatTrackingProcessor(
-                    fps=200,           # Higher resolution for better timing (was 100)
-                    min_bpm=60,        # Production-relevant BPM range
-                    max_bpm=180,       # Production-relevant BPM range
-                    transition_lambda=100  # Improved transition modeling
-                )
-                act = madmom.features.beats.RNNBeatProcessor()(str(mono_wav_file))
-                beats = proc(act)
-                
-                # OPTIMIZED downbeat detection for better bar structure analysis
-                print("Detecting downbeats and bar structure with enhanced accuracy...")
-                downbeat_proc = madmom.features.downbeats.DBNDownBeatTrackingProcessor(
-                    beats_per_bar=[3, 4], 
-                    fps=200,           # Higher resolution matching beat tracking
-                    transition_lambda=100  # Improved transition modeling
-                )
-                downbeats = downbeat_proc(act)
-                
-                # OPTIMIZED tempo detection with higher precision
-                tempo_estimator = madmom.features.tempo.TempoEstimationProcessor(
-                    fps=200,           # Higher resolution for better tempo accuracy
-                    min_bpm=60,        # Production-relevant range
-                    max_bpm=180        # Production-relevant range
-                )
-                tempi = tempo_estimator(act)
-                primary_tempo = tempi[0][0] if len(tempi) > 0 else 120  # BPM
-                
-                # Create click track MIDI
-                click_midi_path = final_output_dir / "click_track.mid"
-                create_click_track_midi(beats, downbeats, primary_tempo, click_midi_path)
+                import numpy as np
+                from beat_this.inference import File2Beats
+
+                file2beats = File2Beats(checkpoint_path="final0", device="cuda", dbn=False)
+                beats, downbeats = file2beats(str(wav_file))
+                beats = np.asarray(beats, dtype=float)
+                downbeats = np.asarray(downbeats, dtype=float)
+
+                if len(beats) < 2:
+                    raise Exception("Zu wenige Beats erkannt")
+                primary_tempo = float(60.0 / np.median(np.diff(beats)))
+
+                create_click_track_midi(beats, downbeats, primary_tempo, final_output_dir / "click_track.mid")
                 output_files.append("click_track.mid")
-                
-                # Create comprehensive beat analysis
+
                 beat_analysis = {
                     "tempo_bpm": round(primary_tempo, 2),
                     "beats": beats.tolist(),
-                    "downbeats": downbeats.tolist() if len(downbeats) > 0 else [],
+                    "downbeats": downbeats.tolist(),
                     "time_signature": detect_time_signature(beats, downbeats),
                     "total_bars": len(downbeats) if len(downbeats) > 0 else len(beats) // 4,
                     "analysis_summary": {
                         "tempo_stability": analyze_tempo_stability(beats),
                         "rhythm_complexity": analyze_rhythm_complexity(beats),
-                        "daw_sync_notes": "Import click_track.mid to sync your DAW perfectly"
+                        "daw_sync_notes": "Import click_track.mid to sync your DAW"
                     }
                 }
-                
-                beat_json_path = final_output_dir / "beat_analysis.json"
-                with open(beat_json_path, 'w') as f:
+                with open(final_output_dir / "beat_analysis.json", 'w') as f:
                     json.dump(beat_analysis, f, indent=2)
                 output_files.append("beat_analysis.json")
-                
-                # Create DAW-ready tempo map
-                tempo_map_path = final_output_dir / "tempo_map.txt"
-                create_daw_tempo_map(beats, primary_tempo, tempo_map_path)
+
+                create_daw_tempo_map(beats, primary_tempo, final_output_dir / "tempo_map.txt")
                 output_files.append("tempo_map.txt")
-                
+
                 completed_tasks.append("beat")
-                print("Beat/Tempo analysis completed - Perfect DAW synchronization ready!")
-                
+                print(f"Beat analysis completed - {primary_tempo:.1f} BPM")
+
             except Exception as e:
                 print(f"Beat/Tempo analysis failed: {e}")
-        
+                task_errors["beat"] = str(e)
+
         # ===================================================================
         # FINAL PROCESSING & SUMMARY
         # ===================================================================
-        
+
+        requested = [t for t, enabled in tasks.items() if enabled]
+        if not completed_tasks:
+            raise Exception("Keine Transkription erfolgreich: " + "; ".join(f"{t}: {e}" for t, e in task_errors.items()))
+
         update_job_progress(job_id, 90, "Finalisierung - Producer Summary wird erstellt")
-        
-        # Create producer summary
-        producer_summary = create_producer_summary(completed_tasks, output_files, primary_tempo if 'primary_tempo' in locals() else None)
-        summary_path = final_output_dir / "PRODUCER_SUMMARY.txt"
-        with open(summary_path, 'w') as f:
-            f.write(producer_summary)
+
+        with open(final_output_dir / "PRODUCER_SUMMARY.txt", 'w') as f:
+            f.write(create_producer_summary(completed_tasks, output_files, primary_tempo))
         output_files.append("PRODUCER_SUMMARY.txt")
-        
-        # Create DAW project template instructions
-        daw_instructions = create_daw_instructions(completed_tasks, output_files)
-        daw_path = final_output_dir / "DAW_IMPORT_GUIDE.txt"
-        with open(daw_path, 'w') as f:
-            f.write(daw_instructions)
+
+        with open(final_output_dir / "DAW_IMPORT_GUIDE.txt", 'w') as f:
+            f.write(create_daw_instructions(completed_tasks, output_files))
         output_files.append("DAW_IMPORT_GUIDE.txt")
-        
-        if not output_files:
-            raise Exception("No transcription files were generated")
-        
-        # Calculate final statistics
+
         total_size = sum(f.stat().st_size for f in final_output_dir.glob("*"))
         processing_time = round(time.time() - start_time, 2)
-        
-        # Debug: Check what files actually exist before finalizing
-        print(f"DEBUG: Checking final output directory: {final_output_dir}")
-        if final_output_dir.exists():
-            existing_files = list(final_output_dir.glob("*"))
-            print(f"DEBUG: Files found in final output: {[f.name for f in existing_files]}")
-            print(f"DEBUG: output_files list: {output_files}")
-        else:
-            print(f"ERROR: Final output directory does not exist: {final_output_dir}")
-        
-        # Save final volume state with multiple commits to ensure persistence
         volume.commit()
-        print("DEBUG: First volume commit completed")
-        
-        # Wait a moment and commit again to ensure all files are persisted
-        time.sleep(2)
-        volume.commit()
-        print("DEBUG: Second volume commit completed")
-        
-        # Final job status
+
         final_status = {
             "status": "completed",
-            "progress": 100, 
+            "progress": 100,
             "phase": "Fertig - Alle Transcriptions fuer Producer verfuegbar",
             "error": None,
             "processing_time": processing_time,
             "files": output_files,
-            "total_size_mb": round(total_size / (1024*1024), 2),
+            "total_size_mb": round(total_size / (1024 * 1024), 2),
             "download_base_url": f"/download/transcription/{job_id}",
             "completed_tasks": completed_tasks,
+            "failed_tasks": {t: task_errors[t] for t in requested if t in task_errors},
             "producer_benefits": {
-                task: TRANSCRIPTION_CONFIG[task]["producer_benefit"] 
+                task: TRANSCRIPTION_CONFIG[task]["producer_benefit"]
                 for task in completed_tasks
             }
         }
-        
         job_status[job_id] = final_status
         save_job_status(job_id, final_status)
-        
-        print(f"Complete music transcription job {job_id} finished!")
-        print(f"Completed tasks: {completed_tasks}")
-        print(f"Generated files: {len(output_files)}")
-        
+
+        print(f"Transcription job {job_id} finished: {completed_tasks}, failed: {list(task_errors)}")
         return {
             "success": True,
             "files": output_files,
@@ -632,20 +364,11 @@ def transcribe_complete_audio(
             "processing_time": processing_time,
             "total_size": total_size,
             "completed_tasks": completed_tasks,
-            "transcription_info": {
-                "libraries_used": {
-                    task: TRANSCRIPTION_CONFIG[task]["library"] 
-                    for task in completed_tasks
-                },
-                "producer_ready": True,
-                "daw_compatible": True
-            }
         }
-        
+
     except Exception as e:
         error_msg = str(e)
-        print(f"Complete music transcription failed: {error_msg}")
-        
+        print(f"Music transcription failed: {error_msg}")
         error_status = {
             "status": "error",
             "progress": 100,
@@ -655,247 +378,214 @@ def transcribe_complete_audio(
         }
         job_status[job_id] = error_status
         save_job_status(job_id, error_status)
-        
-        return {
-            "success": False,
-            "error": error_msg,
-            "job_id": job_id,
-            "processing_time": round(time.time() - start_time, 2)
-        }
+        return {"success": False, "error": error_msg, "job_id": job_id}
 
 # ===================================================================
-# HELPER FUNCTIONS FOR PROFESSIONAL MUSIC PRODUCTION
+# HELPER FUNCTIONS FOR MUSIC PRODUCTION
 # ===================================================================
+
+GM_DRUM_NAMES = {
+    35: "kick", 36: "kick", 37: "side_stick", 38: "snare", 39: "clap", 40: "snare",
+    41: "tom_low", 42: "hihat_closed", 43: "tom_low", 44: "hihat_pedal", 45: "tom_mid",
+    46: "hihat_open", 47: "tom_mid", 48: "tom_high", 49: "crash", 50: "tom_high",
+    51: "ride", 52: "china", 53: "ride_bell", 54: "tambourine", 55: "splash",
+    56: "cowbell", 57: "crash", 59: "ride",
+}
+
+
+def split_muscriptor_midi(full_midi_path, out_dir):
+    """Split the MuScriptor MIDI into melodic instruments and drums (keeps tempo map)"""
+    import pretty_midi
+
+    full = pretty_midi.PrettyMIDI(str(full_midi_path))
+    melodic = [inst for inst in full.instruments if not inst.is_drum and inst.notes]
+    drums = [inst for inst in full.instruments if inst.is_drum and inst.notes]
+
+    def write_subset(instruments, path):
+        midi = pretty_midi.PrettyMIDI(str(full_midi_path))
+        midi.instruments = instruments
+        midi.write(str(path))
+
+    if melodic:
+        write_subset(melodic, out_dir / "melody_notes.mid")
+        create_producer_midi_summary(out_dir / "melody_notes.mid", out_dir / "melody_simplified.mid")
+        notes_json = [
+            {
+                "instrument": inst.name or pretty_midi.program_to_instrument_name(inst.program),
+                "program": int(inst.program),
+                "notes": [
+                    {"pitch": int(n.pitch), "name": pretty_midi.note_number_to_name(int(n.pitch)),
+                     "start": round(float(n.start), 4), "end": round(float(n.end), 4), "velocity": int(n.velocity)}
+                    for n in inst.notes
+                ],
+            }
+            for inst in melodic
+        ]
+        with open(out_dir / "melody_notes.json", 'w') as f:
+            json.dump(notes_json, f, indent=2)
+
+    if drums:
+        write_subset(drums, out_dir / "drums_pattern.mid")
+        hits = {}
+        for inst in drums:
+            for n in inst.notes:
+                hits.setdefault(GM_DRUM_NAMES.get(int(n.pitch), f"note_{int(n.pitch)}"), []).append(round(float(n.start), 4))
+        drum_json = {
+            "hits": {name: sorted(times) for name, times in sorted(hits.items())},
+            "hit_counts": {name: len(times) for name, times in sorted(hits.items())},
+            "midi_mapping": "General MIDI drum map (channel 10)",
+            "producer_note": "Import drums_pattern.mid to replace with your drum samples in DAW"
+        }
+        with open(out_dir / "drums_timing.json", 'w') as f:
+            json.dump(drum_json, f, indent=2)
+
+    return {
+        "melodic": [inst.name or pretty_midi.program_to_instrument_name(inst.program) for inst in melodic],
+        "drums": [inst.name or "Drums" for inst in drums],
+    }
+
 
 def create_producer_midi_summary(input_midi_path, output_path):
     """Create a simplified MIDI file for easier editing in DAW"""
     try:
         import pretty_midi
-        
-        # Load original MIDI
+
         midi_data = pretty_midi.PrettyMIDI(str(input_midi_path))
-        
-        # Create simplified version (remove very short notes, quantize slightly)
-        simplified = pretty_midi.PrettyMIDI()
-        
         for instrument in midi_data.instruments:
-            new_instrument = pretty_midi.Instrument(
-                program=instrument.program,
-                is_drum=instrument.is_drum,
-                name=f"{instrument.name}_simplified" if instrument.name else "melody_simplified"
-            )
-            
-            # Filter and process notes
-            for note in instrument.notes:
-                # Keep notes longer than 0.1 seconds
-                if note.end - note.start > 0.1:
-                    # Slight quantization to 32nd notes for easier editing
-                    start_quantized = round(note.start * 8) / 8  # 32nd note grid at 120 BPM
-                    end_quantized = start_quantized + (note.end - note.start)
-                    
-                    new_note = pretty_midi.Note(
-                        velocity=min(100, max(60, note.velocity)),  # Normalize velocity
-                        pitch=note.pitch,
-                        start=start_quantized,
-                        end=end_quantized
-                    )
-                    new_instrument.notes.append(new_note)
-            
-            simplified.instruments.append(new_instrument)
-        
-        simplified.write(str(output_path))
+            # Keep notes longer than 0.1 seconds, normalize velocity
+            instrument.notes = [
+                pretty_midi.Note(velocity=min(100, max(60, n.velocity)), pitch=n.pitch, start=n.start, end=n.end)
+                for n in instrument.notes if n.end - n.start > 0.1
+            ]
+        midi_data.write(str(output_path))
         print(f"Created simplified MIDI: {output_path}")
-        
+
     except Exception as e:
         print(f"Could not create simplified MIDI: {e}")
 
-def create_drum_midi(onsets, output_path):
-    """Create a MIDI file with drum hits for sample replacement"""
-    try:
-        import pretty_midi
-        
-        # Create MIDI with drum track
-        midi = pretty_midi.PrettyMIDI()
-        drum_track = pretty_midi.Instrument(program=0, is_drum=True, name="Drum Pattern")
-        
-        # Map onsets to standard drum MIDI notes
-        kick_note = 36   # Standard kick drum
-        snare_note = 38  # Standard snare
-        hihat_note = 42  # Hi-hat closed
-        
-        for i, onset_time in enumerate(onsets):
-            # Simple pattern: assign different drum sounds based on timing
-            if i % 4 == 0:  # Kick on beats 1 and 3
-                note_pitch = kick_note
-            elif i % 4 == 2:  # Snare on beats 2 and 4
-                note_pitch = snare_note
-            else:  # Hi-hat on off-beats
-                note_pitch = hihat_note
-            
-            # Create drum hit
-            note = pretty_midi.Note(
-                velocity=100,
-                pitch=note_pitch,
-                start=onset_time,
-                end=onset_time + 0.1  # Short drum hit
-            )
-            drum_track.notes.append(note)
-        
-        midi.instruments.append(drum_track)
-        midi.write(str(output_path))
-        print(f"Created drum MIDI pattern: {output_path}")
-        
-    except Exception as e:
-        print(f"Could not create drum MIDI: {e}")
 
-def analyze_chord_progression(chords, strength):
-    """Analyze chord progression for music production"""
-    # Filter out weak detections and create clean progression
-    threshold = 0.3
-    clean_progression = []
-    
-    for i, (chord, conf) in enumerate(zip(chords, strength)):
-        if conf > threshold:
-            # Convert chord to standard notation
-            if chord != 'N':  # 'N' means no chord
-                clean_progression.append({
-                    "chord": chord,
-                    "confidence": float(conf),
-                    "time": i * 0.023,  # Essentia default hop size
-                    "duration": 0.023
-                })
-    
-    return clean_progression
+NOTE_TO_PC = {"C": 0, "C#": 1, "Db": 1, "D": 2, "D#": 3, "Eb": 3, "E": 4, "F": 5, "F#": 6,
+              "Gb": 6, "G": 7, "G#": 8, "Ab": 8, "A": 9, "A#": 10, "Bb": 10, "B": 11}
+
+
+def chord_to_pitches(chord_name):
+    """'C#m' -> [61, 64, 68]; 'Bb' -> [70, 74, 77] (root position around middle C)"""
+    minor = chord_name.endswith("m")
+    root = chord_name[:-1] if minor else chord_name
+    if root not in NOTE_TO_PC:
+        return None
+    base = 60 + NOTE_TO_PC[root]
+    return [base, base + (3 if minor else 4), base + 7]
+
+
+def analyze_chords_and_key(mono_wav_file, sample_rate=44100, frame_size=8192, hop_size=1024):
+    """Chord recognition (HPCP + ChordsDetection) and key detection (KeyExtractor) with essentia"""
+    import essentia
+    import essentia.standard as es
+
+    audio = es.MonoLoader(filename=str(mono_wav_file), sampleRate=sample_rate)()
+
+    # Key detection on the full track
+    key, scale, strength = es.KeyExtractor(sampleRate=sample_rate)(audio)
+    key_info = {"key": key, "scale": scale, "strength": round(float(strength), 3),
+                "label": f"{key} {'Dur' if scale == 'major' else 'Moll'}"}
+
+    windowing = es.Windowing(type='blackmanharris62')
+    spectrum = es.Spectrum()
+    spectralpeaks = es.SpectralPeaks(orderBy='magnitude', magnitudeThreshold=0.00001,
+                                     minFrequency=40, maxFrequency=5000, maxPeaks=100)
+    hpcp = es.HPCP(size=12, referenceFrequency=440, harmonics=8, bandPreset=False,
+                   minFrequency=40, maxFrequency=5000, weightType='cosine', nonLinear=False)
+
+    hpcp_frames = []
+    for frame in es.FrameGenerator(audio, frameSize=frame_size, hopSize=hop_size, startFromZero=True):
+        peaks_freq, peaks_mag = spectralpeaks(spectrum(windowing(frame)))
+        hpcp_frames.append(hpcp(peaks_freq, peaks_mag))
+
+    chords, chord_strength = es.ChordsDetection(hopSize=hop_size, sampleRate=sample_rate, windowSize=2)(
+        essentia.array(hpcp_frames))
+
+    # Merge consecutive identical chords into segments
+    frame_dur = hop_size / sample_rate
+    progression = []
+    for i, (chord, conf) in enumerate(zip(chords, chord_strength)):
+        t = i * frame_dur
+        if conf < 0.3 or chord == 'N':
+            continue
+        if progression and progression[-1]["chord"] == chord and abs(progression[-1]["end"] - t) < 2 * frame_dur:
+            seg = progression[-1]
+            seg["end"] = t + frame_dur
+            seg["_conf"].append(float(conf))
+        else:
+            progression.append({"chord": chord, "start": t, "end": t + frame_dur, "_conf": [float(conf)]})
+
+    clean = []
+    for seg in progression:
+        duration = seg["end"] - seg["start"]
+        if duration < 0.25:  # drop flicker
+            continue
+        clean.append({
+            "chord": seg["chord"],
+            "time": round(seg["start"], 3),
+            "duration": round(duration, 3),
+            "confidence": round(sum(seg["_conf"]) / len(seg["_conf"]), 3),
+        })
+    return clean, key_info
+
 
 def create_chord_midi(chord_progression, output_path):
     """Create MIDI file with chord progression"""
-    try:
-        import pretty_midi
-        
-        midi = pretty_midi.PrettyMIDI()
-        chord_track = pretty_midi.Instrument(program=0, name="Chord Progression")
-        
-        # Simple chord mapping (can be expanded)
-        chord_maps = {
-            'C': [60, 64, 67],      # C major
-            'Dm': [62, 65, 69],     # D minor
-            'Em': [64, 67, 71],     # E minor
-            'F': [65, 69, 72],      # F major
-            'G': [67, 71, 74],      # G major
-            'Am': [69, 72, 76],     # A minor
-            'Bdim': [71, 74, 77],   # B diminished
-        }
-        
-        for chord_info in chord_progression:
-            chord_name = chord_info["chord"]
-            start_time = chord_info["time"]
-            duration = chord_info.get("duration", 1.0)
-            
-            # Simple chord mapping
-            if chord_name in chord_maps:
-                notes = chord_maps[chord_name]
-            else:
-                # Default to C major if chord not recognized
-                notes = [60, 64, 67]
-            
-            # Add chord notes
-            for note_pitch in notes:
-                note = pretty_midi.Note(
-                    velocity=80,
-                    pitch=note_pitch,
-                    start=start_time,
-                    end=start_time + duration
-                )
-                chord_track.notes.append(note)
-        
-        midi.instruments.append(chord_track)
-        midi.write(str(output_path))
-        print(f"Created chord progression MIDI: {output_path}")
-        
-    except Exception as e:
-        print(f"Could not create chord MIDI: {e}")
+    import pretty_midi
 
-def detect_key_signature(chord_progression):
-    """Detect the most likely key signature"""
-    if not chord_progression:
-        return "C major"
-    
-    # Simple key detection based on chord frequency
-    chord_counts = {}
+    midi = pretty_midi.PrettyMIDI()
+    chord_track = pretty_midi.Instrument(program=0, name="Chord Progression")
     for chord_info in chord_progression:
-        chord = chord_info["chord"]
-        chord_counts[chord] = chord_counts.get(chord, 0) + 1
-    
-    most_common = max(chord_counts, key=chord_counts.get) if chord_counts else "C"
-    return f"{most_common} major"  # Simplified
+        pitches = chord_to_pitches(chord_info["chord"])
+        if not pitches:
+            continue
+        for pitch in pitches:
+            chord_track.notes.append(pretty_midi.Note(
+                velocity=80, pitch=pitch,
+                start=chord_info["time"], end=chord_info["time"] + chord_info["duration"]
+            ))
+    midi.instruments.append(chord_track)
+    midi.write(str(output_path))
+    print(f"Created chord progression MIDI: {output_path}")
 
-def find_common_progressions(chord_progression):
-    """Find common chord progressions for producers"""
-    if len(chord_progression) < 3:
-        return []
-    
-    # Extract just chord names
-    chords = [c["chord"] for c in chord_progression]
-    
-    common_patterns = {
-        "vi-IV-I-V": ["Am", "F", "C", "G"],
-        "I-V-vi-IV": ["C", "G", "Am", "F"],
-        "ii-V-I": ["Dm", "G", "C"]
-    }
-    
-    found_progressions = []
-    for name, pattern in common_patterns.items():
-        # Check if pattern exists in chord sequence
-        for i in range(len(chords) - len(pattern) + 1):
-            if chords[i:i+len(pattern)] == pattern:
-                found_progressions.append(name)
-                break
-    
-    return found_progressions
 
-def generate_producer_tips(chord_progression):
+def generate_producer_tips(chord_progression, key_info):
     """Generate helpful tips for producers"""
     tips = [
+        f"Tonart laut Analyse: {key_info['label']} (Sicherheit {key_info['strength']})",
         "Import chord_progression.mid into your DAW as a guide track",
-        "Use these chords to create bass lines and lead melodies", 
+        "Use these chords to create bass lines and lead melodies",
         "Try different inversions of these chords for variety",
-        "Layer with the melody MIDI for complete harmonic content"
     ]
-    
     if len(chord_progression) > 8:
         tips.append("Consider looping sections of this progression for verses/choruses")
-    
     return tips
 
-def create_chord_chart(chord_progression, output_path):
+
+def create_chord_chart(chord_progression, key_info, output_path):
     """Create human-readable chord chart"""
-    try:
-        with open(output_path, 'w') as f:
-            f.write("CHORD CHART FOR MUSIC PRODUCTION\n")
-            f.write("================================\n\n")
-            
-            if not chord_progression:
-                f.write("No clear chord progression detected.\n")
-                return
-            
-            f.write("Time\t\tChord\t\tConfidence\n")
-            f.write("-" * 40 + "\n")
-            
-            for chord_info in chord_progression:
-                time_str = f"{chord_info['time']:.1f}s"
-                chord = chord_info['chord']
-                conf = f"{chord_info['confidence']:.2f}"
-                f.write(f"{time_str:<12}\t{chord:<12}\t{conf}\n")
-            
-            f.write("\n\nPRODUCER NOTES:\n")
-            f.write("- Import chord_progression.mid for MIDI version\n")
-            f.write("- Use as foundation for bass lines and melodies\n")
-            f.write("- Experiment with different chord voicings\n")
-        
-        print(f"Created chord chart: {output_path}")
-        
-    except Exception as e:
-        print(f"Could not create chord chart: {e}")
+    with open(output_path, 'w') as f:
+        f.write("CHORD CHART FOR MUSIC PRODUCTION\n")
+        f.write("================================\n\n")
+        f.write(f"Tonart: {key_info['label']} ({key_info['key']} {key_info['scale']}, Sicherheit {key_info['strength']})\n\n")
+
+        if not chord_progression:
+            f.write("No clear chord progression detected.\n")
+            return
+
+        f.write("Time\t\tChord\t\tDauer\t\tConfidence\n")
+        f.write("-" * 56 + "\n")
+        for c in chord_progression:
+            f.write(f"{c['time']:>7.2f}s\t{c['chord']:<12}\t{c['duration']:.2f}s\t\t{c['confidence']:.2f}\n")
+
+        f.write("\n\nPRODUCER NOTES:\n")
+        f.write("- Import chord_progression.mid for MIDI version\n")
+        f.write("- Use as foundation for bass lines and melodies\n")
+        f.write("- Experiment with different chord voicings\n")
 
 def create_click_track_midi(beats, downbeats, tempo, output_path):
     """Create a click track MIDI for DAW synchronization"""
@@ -1029,137 +719,93 @@ def create_daw_tempo_map(beats, primary_tempo, output_path):
         print(f"Could not create tempo map: {e}")
 
 def create_producer_summary(completed_tasks, output_files, tempo=None):
-    """Create a comprehensive summary for producers"""
+    """Create a summary for producers"""
     summary = """
 KLEIN DIGITAL SOLUTIONS - MUSIC TRANSCRIPTION COMPLETE
 =========================================================
 
 PRODUCER-READY FILES GENERATED:
 """
-    
+    if "melody" in completed_tasks or "drums" in completed_tasks:
+        summary += """
+FULL TRANSCRIPTION (MuScriptor large):
+   -> full_transcription.mid - All instruments incl. drums, with tempo map
+"""
     if "melody" in completed_tasks:
         summary += """
-MELODY/INSTRUMENTS (basic-pitch):
-   -> melody_notes.mid - Load directly into VST instruments
+MELODY/INSTRUMENTS (MuScriptor large):
+   -> melody_notes.mid - One track per detected instrument, load into VSTs
    -> melody_simplified.mid - Cleaned version for easier editing
-   -> melody_notes.json - Detailed note data
-   
-   PRODUCER BENEFIT: Perfect MIDI notes for harmonizers, synthesizers & VST instruments
+   -> melody_notes.json - Detailed note data per instrument
 """
-
     if "drums" in completed_tasks:
         summary += """
-DRUMS (madmom):
-   -> drums_pattern.mid - Import into drum machine/sampler
-   -> drums_timing.json - Precise timing data
-   
-   PRODUCER BENEFIT: Replace drums with your own samples while keeping original timing
+DRUMS (MuScriptor large):
+   -> drums_pattern.mid - Kick/Snare/Hi-Hat/Toms/Cymbals (General MIDI)
+   -> drums_timing.json - Hit times per drum piece
 """
-
     if "chords" in completed_tasks:
         summary += """
-CHORDS (essentia):
-   -> chord_progression.mid - Full chord progression as MIDI
-   -> chord_analysis.json - Detailed harmonic analysis
+CHORDS + KEY (essentia):
+   -> chord_progression.mid - Chord progression as MIDI
+   -> chord_analysis.json - Key + chord segments
    -> chord_chart.txt - Human-readable chord chart
-   
-   PRODUCER BENEFIT: Perfect for remixes, covers & creating new arrangements
 """
-
     if "beat" in completed_tasks:
         summary += f"""
-BEAT/TEMPO (madmom):
-   -> click_track.mid - Perfect synchronization for your DAW
-   -> beat_analysis.json - Complete timing analysis
+BEAT/TEMPO (beat_this):
+   -> click_track.mid - Click for DAW synchronization
+   -> beat_analysis.json - Beats, downbeats, time signature
    -> tempo_map.txt - Manual tempo mapping guide
    {f"-> Primary Tempo: {tempo:.1f} BPM" if tempo else ""}
-   
-   PRODUCER BENEFIT: Sync your DAW perfectly with the original track
 """
-
     summary += """
 
 DAW WORKFLOW TIPS:
 ==================
-1. Import click_track.mid first to set up perfect timing
-2. Load melody_notes.mid into your favorite VST instrument
+1. Set the DAW tempo (see beat_analysis.json) or import click_track.mid
+2. Load melody_notes.mid tracks into your favorite VST instruments
 3. Use chord_progression.mid as harmonic foundation
 4. Replace drums_pattern.mid hits with your own samples
-5. Check PRODUCER_SUMMARY.txt for detailed instructions
-
-READY FOR PROFESSIONAL MUSIC PRODUCTION!
 """
-    
     return summary
 
+
 def create_daw_instructions(completed_tasks, output_files):
-    """Create detailed DAW import instructions"""
+    """Create DAW import instructions"""
     instructions = """
 DAW IMPORT GUIDE - KLEIN DIGITAL SOLUTIONS
 ==========================================
-
-STEP-BY-STEP WORKFLOW:
 """
-
     if "beat" in completed_tasks:
         instructions += """
 1. TEMPO & SYNCHRONIZATION:
-   - Open your DAW and create a new project
-   - Import 'click_track.mid' first
-   - This will automatically set the correct tempo and timing
-   - Enable metronome and sync with the click track
+   - Create a new project and set the BPM from beat_analysis.json
+   - Import 'click_track.mid' and align it with the original audio
 """
-
     if "melody" in completed_tasks:
         instructions += """
 2. MELODY & INSTRUMENTS:
-   - Create a new MIDI track for melody
-   - Import 'melody_notes.mid' or 'melody_simplified.mid'
-   - Load your favorite VST instrument (piano, synth, etc.)
-   - Adjust velocity and timing as needed
-   - The MIDI is quantized and ready for professional use
+   - Import 'melody_notes.mid' (one MIDI track per instrument)
+   - Load matching VST instruments, adjust velocity and timing as needed
 """
-
     if "chords" in completed_tasks:
         instructions += """
 3. CHORD PROGRESSION:
-   - Create a new MIDI track for chords
-   - Import 'chord_progression.mid'
-   - Load a pad/piano VST or use for bass line reference
-   - Check 'chord_chart.txt' for chord names and timing
-   - Use as foundation for bass lines and additional harmonies
+   - Import 'chord_progression.mid' on a pad/piano track
+   - 'chord_chart.txt' lists key, chord names and timing
 """
-
     if "drums" in completed_tasks:
         instructions += """
 4. DRUM REPLACEMENT:
-   - Create a new MIDI track for drums
-   - Import 'drums_pattern.mid'
-   - Load your drum machine or sampler
-   - Replace MIDI notes with your own drum samples
-   - The timing matches the original track perfectly
+   - Import 'drums_pattern.mid' into your drum sampler (General MIDI mapping)
 """
-
     instructions += """
-
-ADVANCED TECHNIQUES:
-===================
-- Layer melody MIDI with chord progression for full harmonic content
-- Use chord analysis to create bass lines in the same key
-- Experiment with different VST instruments on the melody track
-- Create variations by copying and modifying the MIDI patterns
-- Use the tempo map for complex timing adjustments
-
 TROUBLESHOOTING:
 ===============
-- If timing seems off, make sure your DAW is set to the correct BPM
-- Check that all MIDI tracks are properly aligned with the click track
-- For complex rhythms, refer to the beat_analysis.json file
-- Contact Klein Digital Solutions for additional support
-
-READY TO CREATE AMAZING MUSIC!
+- If timing seems off, check the DAW tempo against beat_analysis.json
+- 'full_transcription.mid' contains the MuScriptor tempo map
 """
-    
     return instructions
 
 # ===================================================================
@@ -1189,10 +835,10 @@ def create_transcription_app():
     @web_app.post("/transcribe")
     async def api_transcribe(
         audio_file: UploadFile = File(..., description="Audio file for transcription"),
-        melody: bool = Form(True, description="Extract melody/instruments (basic-pitch)"),
-        drums: bool = Form(True, description="Extract drum patterns (madmom)"),
-        chords: bool = Form(True, description="Analyze chord progression (essentia)"),
-        beat: bool = Form(True, description="Analyze beat/tempo (madmom)")
+        melody: bool = Form(True, description="Extract melody/instruments (MuScriptor)"),
+        drums: bool = Form(True, description="Extract drum patterns (MuScriptor)"),
+        chords: bool = Form(True, description="Analyze chords + key (essentia)"),
+        beat: bool = Form(True, description="Analyze beat/tempo (beat_this)")
     ):
         """
         Complete music transcription for professional production
@@ -1274,6 +920,7 @@ def create_transcription_app():
             raise HTTPException(500, f"Transcription upload error: {str(e)}")
 
     @web_app.get("/status/transcription/{job_id}")
+    @web_app.get("/status/{job_id}")  # path used by the frontend
     async def transcription_status(job_id: str):
         """Status API for transcription progress"""
         # Always check volume first for latest status
@@ -1309,12 +956,12 @@ def create_transcription_app():
         return {
             "status": "healthy",
             "service": "Klein Digital Solutions - Music AI Transcription Complete",
-            "version": "1.0.0",
+            "version": "2.0.0",
             "libraries": {
-                "melody": "basic-pitch (Spotify)",
-                "drums": "madmom",
-                "chords": "essentia",
-                "beat": "madmom"
+                "melody": f"MuScriptor {MUSCRIPTOR_MODEL} (CC BY-NC 4.0)",
+                "drums": f"MuScriptor {MUSCRIPTOR_MODEL} (CC BY-NC 4.0)",
+                "chords": "essentia (ChordsDetection + KeyExtractor)",
+                "beat": "beat_this (CPJKU)"
             },
             "max_file_size": "100MB",
             "supported_formats": ["MP3", "WAV", "FLAC", "M4A", "AAC", "OGG"],
@@ -1344,39 +991,6 @@ def create_transcription_app():
                 "educational": "Learn from professional track analysis"
             }
         }
-
-    @web_app.get("/download/transcription/{job_id}/{filename}")
-    async def download_transcription_file(job_id: str, filename: str):
-        """Download individual transcription file"""
-        volume.reload()  # Force volume reload for latest state
-        
-        file_path = Path(storage_path) / job_id / "output" / "final" / filename
-        
-        if not file_path.exists():
-            raise HTTPException(404, f"Transcription file not found: {filename}")
-
-        def file_iterator():
-            with open(file_path, "rb") as f:
-                while chunk := f.read(8192):
-                    yield chunk
-        
-        # Determine media type
-        media_type = "application/octet-stream"
-        if filename.endswith(('.mid', '.midi')):
-            media_type = "audio/midi"
-        elif filename.endswith('.json'):
-            media_type = "application/json"
-        elif filename.endswith('.txt'):
-            media_type = "text/plain"
-        
-        return StreamingResponse(
-            file_iterator(),
-            media_type=media_type,
-            headers={
-                "Content-Disposition": f"attachment; filename={filename}",
-                "Access-Control-Allow-Origin": "*",
-            }
-        )
 
     @web_app.get("/download/transcription/{job_id}/all.zip")
     async def download_transcription_zip(job_id: str):
@@ -1429,6 +1043,39 @@ def create_transcription_app():
             }
         )
 
+    @web_app.get("/download/transcription/{job_id}/{filename}")
+    async def download_transcription_file(job_id: str, filename: str):
+        """Download individual transcription file"""
+        volume.reload()  # Force volume reload for latest state
+        
+        file_path = Path(storage_path) / job_id / "output" / "final" / Path(filename).name
+
+        if not file_path.exists():
+            raise HTTPException(404, f"Transcription file not found: {filename}")
+
+        def file_iterator():
+            with open(file_path, "rb") as f:
+                while chunk := f.read(8192):
+                    yield chunk
+        
+        # Determine media type
+        media_type = "application/octet-stream"
+        if filename.endswith(('.mid', '.midi')):
+            media_type = "audio/midi"
+        elif filename.endswith('.json'):
+            media_type = "application/json"
+        elif filename.endswith('.txt'):
+            media_type = "text/plain"
+        
+        return StreamingResponse(
+            file_iterator(),
+            media_type=media_type,
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
+                "Access-Control-Allow-Origin": "*",
+            }
+        )
+
     @web_app.get("/preview/transcription/{job_id}/{filename}")
     async def preview_transcription_file(job_id: str, filename: str):
         """Generate and stream audio preview for transcription files"""
@@ -1455,7 +1102,7 @@ def create_transcription_app():
                     
                     # Convert MIDI to WAV using fluidsynth
                     fluidsynth_cmd = [
-                        "fluidsynth", "-ni", "/usr/share/soundfonts/default.sf2", 
+                        "fluidsynth", "-ni", SOUNDFONT, 
                         str(file_path), "-F", str(wav_temp), "-r", "44100"
                     ]
                     
@@ -1532,7 +1179,6 @@ if __name__ == "__main__":
     print("Modal Serverless Deployment with GPU optimization")
     print("Deploy: modal deploy modal_app_transcription.py")
     print("\nFeatures:")
-    print("   • basic-pitch: Melody/Instruments -> VST-ready MIDI")
-    print("   • madmom: Drums -> Sample replacement MIDI")
-    print("   • essentia: Chords -> Harmonic analysis for remixes")
-    print("   • madmom: Beat/Tempo -> Perfect DAW synchronization")
+    print("   • MuScriptor: Melody/Instruments + Drums -> MIDI")
+    print("   • essentia: Chords + Key")
+    print("   • beat_this: Beat/Tempo -> DAW synchronization")
