@@ -9,7 +9,7 @@
 [![Modal](https://img.shields.io/badge/Powered_by-Modal_A10G_GPU-FF6B6B?style=for-the-badge)](https://modal.com)
 [![Vercel](https://img.shields.io/badge/Deployed_on-Vercel-000000?style=for-the-badge&logo=vercel)](https://vercel.com)
 
-[📚 Documentation](./docs) | [🐛 Report Bug](https://github.com/KleinDigitalSolutions/XO-master/issues)**
+[📚 Documentation](./docs) | [🐛 Report Bug](https://github.com/dreamtelligence/XO-master/issues)**
 
 </div>
 
@@ -48,7 +48,7 @@ This is a **production-ready, full-stack AI music platform** that I built to exp
 - **Row-Level Security**: PostgreSQL RLS for tamper-proof credit management
 - **Edge Functions**: Vercel serverless functions for payment webhooks
 - **PWA**: Progressive Web App with service worker
-- **Real-time Processing**: WebSocket updates for long-running jobs
+- **Async Jobs**: Long-running jobs report progress via status polling
 - **99%+ Profit Margin**: Optimized GPU usage (€0.014-€0.037 per track)
 
 ---
@@ -79,7 +79,7 @@ graph TB
 - Service Worker - PWA capabilities
 
 **Backend:**
-- **Compute**: Modal Labs (Python 3.11 + FastAPI)
+- **Compute**: Modal Labs (Python 3.11, transcription on 3.12 + FastAPI)
 - **GPU**: NVIDIA A10G (24GB VRAM)
 - **Payment**: Stripe with webhooks
 - **Database**: Supabase (PostgreSQL + RLS)
@@ -104,7 +104,7 @@ beat_this + essentia       # Beats, chords, key
 ### Prerequisites
 
 - Node.js 18+ and npm
-- Python 3.11+
+- Python 3.11+ (for the Modal CLI; the services pin their own Python in their images)
 - Modal account (for GPU services)
 - Stripe account (for payments)
 - Supabase project (for database)
@@ -114,7 +114,7 @@ beat_this + essentia       # Beats, chords, key
 
 ```bash
 # Clone the repository
-git clone https://github.com/KleinDigitalSolutions/XO-master.git
+git clone https://github.com/dreamtelligence/XO-master.git
 cd XO-master
 
 # Install dependencies
@@ -204,21 +204,28 @@ The platform uses **Modal Labs** for serverless GPU computing, which provides:
 
 - **Auto-scaling**: 0 to 100+ GPUs based on demand
 - **Pay-per-second billing**: Only pay for actual compute time
-- **Cold start**: <10 seconds to spin up new GPU instances
+- **Cold start**: container boot plus model load; weights are baked into the images, so nothing is downloaded per request
 - **A10G GPU**: 24GB VRAM for large model inference
 
 **Example Modal Function:**
 ```python
 @app.function(
-    gpu="A10G",
-    timeout=600,
-    image=zfturbo_image  # Custom image with ML dependencies
+    image=zfturbo_image,       # ZFTurbo repo pinned + SCNet / Mel-Band RoFormer weights baked in
+    gpu="a10g",
+    timeout=1800,
+    memory=20480,
+    volumes={storage_path: volume},
+    scaledown_window=120,
 )
-def separate_audio(audio_file: bytes, model: str):
-    # Process audio on GPU
-    stems = bs_roformer.separate(audio_file, model)
-    return stems
+def bs_roformer_separate_audio(audio_data: bytes, filename: str, job_id: str,
+                               selected_stems: str = "all", use_tta: bool = False,
+                               extract_instrumental: bool = False) -> dict:
+    # SCNet XL IHF -> vocals/drums/bass/other, Mel-Band RoFormer -> cleaner vocals
+    # (function name kept for compatibility with existing deployments)
+    ...
 ```
+
+See `modal_app_zfturbo_complete.py` for the full implementation.
 
 ### Credit System Security
 
@@ -248,7 +255,7 @@ CREATE POLICY "Service role can manage users" ON credit_users
 - Speech Enhancement: 15-30s
 - AI Mastering: 30-60s
 - Music Transcription: 20-45s
-- Audio Generation: 10-20s
+- Audio Generation: 10-20s (API only, no UI in `index.html` yet)
 
 **Cost Efficiency:**
 - Modal A10G: ~$1.10/hour ($0.0003/second)
@@ -263,12 +270,12 @@ CREATE POLICY "Service role can manage users" ON credit_users
 | Metric | Value |
 |--------|-------|
 | **Lines of Code** | ~15,000+ |
-| **AI Models Deployed** | 5 production models |
+| **AI Models Deployed** | 8 models across 5 GPU services |
 | **API Endpoints** | 4 serverless functions |
 | **Database Tables** | 3 + RLS policies |
 | **Uptime** | 99.9% (Vercel + Modal) |
 | **Processing Speed** | 10x faster than local |
-| **Cold Start Time** | <10 seconds |
+| **Cold Start Time** | Depends on model size (weights baked into images) |
 
 ---
 

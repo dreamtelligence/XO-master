@@ -24,6 +24,7 @@ Before you begin, create accounts on these platforms:
 
 - [ ] **GitHub** - [github.com](https://github.com)
 - [ ] **Modal Labs** - [modal.com](https://modal.com) (Serverless GPU)
+- [ ] **Hugging Face** - [huggingface.co](https://huggingface.co) (token for the gated MuScriptor and Stable Audio Open weights)
 - [ ] **Vercel** - [vercel.com](https://vercel.com) (Frontend hosting)
 - [ ] **Supabase** - [supabase.com](https://supabase.com) (Database)
 - [ ] **Stripe** - [stripe.com](https://stripe.com) (Payments)
@@ -37,7 +38,7 @@ Install the following on your development machine:
 node --version  # Should be v18.0.0 or higher
 npm --version   # Should be 9.0.0 or higher
 
-# Python 3.11+
+# Python 3.11+ (for the Modal CLI; each service pins its own Python inside its image)
 python3 --version  # Should be 3.11.0 or higher
 pip3 --version
 
@@ -70,7 +71,7 @@ brew install postgresql  # macOS
 
 ```bash
 # 1. Clone repository
-git clone https://github.com/KleinDigitalSolutions/XO-master.git
+git clone https://github.com/dreamtelligence/XO-master.git
 cd XO-master
 
 # 2. Install dependencies
@@ -83,9 +84,10 @@ cp .env.example .env
 # 4. Run database migrations
 psql -h [SUPABASE_HOST] -U postgres -d postgres -f supabase_credit_schema.sql
 
-# 5. Deploy Modal services
+# 5. Deploy Modal services (needs the `huggingface` secret, see Step 5)
 modal token new
-modal deploy modal_app_zfturbo_complete.py
+modal secret create huggingface HF_TOKEN=hf_...
+for f in modal_app_*.py; do modal deploy "$f"; done
 
 # 6. Start dev server
 npm run dev
@@ -100,7 +102,7 @@ npm run dev
 
 ```bash
 # Clone the repository
-git clone https://github.com/KleinDigitalSolutions/XO-master.git
+git clone https://github.com/dreamtelligence/XO-master.git
 
 # Navigate to project directory
 cd XO-master
@@ -281,29 +283,40 @@ Workspace: your-workspace
 Token: active
 ```
 
-#### Test Modal Deployment
+#### Hugging Face Token (gated models)
+
+MuScriptor (transcription) and Stable Audio Open (generation) are gated on Hugging Face:
+
+1. Create a token at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)
+2. With the same account, accept the licenses of
+   [MuScriptor large](https://huggingface.co/MuScriptor/muscriptor-large) (CC BY-NC 4.0, non-commercial) and
+   [Stable Audio Open 1.0](https://huggingface.co/stabilityai/stable-audio-open-1.0) (Stability AI Community License)
+3. Store it as a Modal secret:
 
 ```bash
-# Deploy your first Modal service (Music Separation)
-modal deploy modal_app_zfturbo_complete.py
-
-# This will:
-# 1. Build custom Docker image (~5-10 minutes first time)
-# 2. Upload model weights
-# 3. Deploy function
-# 4. Return endpoint URL
+modal secret create huggingface HF_TOKEN=hf_...
 ```
 
-Expected output:
-```
-✓ Created objects.
-├── 🔨 Created function separate_audio.
-└── 🌐 Created web endpoint => https://[username]--music-ai-separator.modal.run
+#### Deploy the AI Services
 
-View Deployment: https://modal.com/apps/[app-id]
+```bash
+modal deploy modal_app_zfturbo_complete.py      # Separation: SCNet XL IHF + Mel-Band RoFormer
+modal deploy modal_app_enhancement.py           # Speech: MossFormer2 + Whisper large-v3-turbo + AST
+modal deploy modal_app_matchering.py            # Mastering: pedalboard chain
+modal deploy modal_app_transcription.py         # Transcription: MuScriptor + beat_this + essentia
+modal deploy modal_app_audio_generation.py      # Generation: Stable Audio Open 1.0
 ```
 
-**Copy the endpoint URL** - you'll need it for frontend configuration.
+The first build of each image takes several minutes: model weights are downloaded at build time and
+baked into the image (separation checkpoints are pinned and checked against SHA-256). Only MuScriptor
+is fetched on first use and then cached in the `muscriptor-hf-cache` volume.
+
+Each deploy prints a web endpoint like:
+```
+https://<workspace>--music-ai-separator-zfturbo-complete-fastapi-app.<region>.modal.run
+```
+
+**Copy the endpoint URLs** - you'll need them for the frontend configuration (Step 7).
 
 ### Step 6: Configure Environment Variables
 
@@ -338,14 +351,9 @@ SUPABASE_SERVICE_ROLE_KEY=eyJhbGc...  # Secret service role key
 
 # Security
 CREDIT_WEBHOOK_SECRET=your_random_secret_here_32_chars_min
-
-# Modal Endpoints (from Step 5)
-MODAL_SEPARATION_ENDPOINT=https://[user]--music-ai-separator.modal.run
-MODAL_ENHANCEMENT_ENDPOINT=https://[user]--speech-enhancement.modal.run
-MODAL_MASTERING_ENDPOINT=https://[user]--audio-mastering.modal.run
-MODAL_TRANSCRIPTION_ENDPOINT=https://[user]--music-transcription.modal.run
-MODAL_GENERATION_ENDPOINT=https://[user]--audio-generation.modal.run
 ```
+
+The Modal endpoints are not environment variables: they are set directly in `index.html` (Step 7).
 
 **Generate a secure webhook secret:**
 ```bash
@@ -358,20 +366,17 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 
 ### Step 7: Update Frontend Configuration
 
-Edit `index.html` to add your Modal endpoints:
+Replace the Modal URLs in `index.html` with the ones printed by `modal deploy`:
 
-```javascript
-// Find this section in index.html (around line 5000-5100)
-const MODAL_ENDPOINTS = {
-    separation: 'YOUR_MODAL_SEPARATION_ENDPOINT',
-    enhancement: 'YOUR_MODAL_ENHANCEMENT_ENDPOINT',
-    mastering: 'YOUR_MODAL_MASTERING_ENDPOINT',
-    transcription: 'YOUR_MODAL_TRANSCRIPTION_ENDPOINT',
-    generation: 'YOUR_MODAL_GENERATION_ENDPOINT'
-}
+| Constant in `index.html` | Modal app |
+|--------------------------|-----------|
+| `API_BASE`, `HEALTH_URL`, `MODELS_URL`, `MODAL_API_BASE` | `music-ai-separator-zfturbo-complete` (`fastapi-app`) |
+| `MATCHERING_API_BASE`, `MATCHERING_HEALTH_URL` | `matchering-ai-mastering` (`matchering-app`) |
+| `TRANSCRIPTION_API_BASE` | `music-ai-transcription-complete` (`transcription-app`) |
+| `ENHANCEMENT_API_BASE` | `audio-enhancement-complete` (`fastapi-app`) |
 
-// Replace with your actual Modal endpoints
-```
+The audio generation service (`audio-generation-stable-audio-open`) has no UI in `index.html` yet and
+is used through its API directly.
 
 ---
 
@@ -397,21 +402,25 @@ The `vercel.json` file is pre-configured:
 
 ### Modal Configuration
 
-Each Modal app has configuration at the top of the file:
+Each Modal app defines its image, GPU and models at the top of the file:
 
 ```python
 # Example: modal_app_zfturbo_complete.py
 
-# GPU Configuration
-GPU_TYPE = "A10G"  # Options: T4, A10G, A100
-GPU_MEMORY = 24    # GB
-TIMEOUT = 600      # seconds
+ZFTURBO_COMMIT = "6fdad13..."      # ZFTurbo repo pinned to a known commit
 
-# Model Configuration
-SEGMENT_SIZE = 25  # Larger = better quality, slower
-NUM_SHIFTS = 2     # More = better quality, slower
-OVERLAP = 0.25     # Segment overlap
+SEPARATION_MODELS = {
+    "stems":  {"name": "SCNet XL IHF", "model_type": "scnet", ...},              # vocals/drums/bass/other
+    "vocals": {"name": "Mel-Band RoFormer (KimberleyJensen)",
+               "model_type": "mel_band_roformer", ...},                            # cleaner vocals
+}   # each entry has a pinned download URL and a SHA-256 checksum
+
+@app.function(image=zfturbo_image, gpu="a10g", timeout=1800, memory=20480, ...)
+def bs_roformer_separate_audio(...):   # name kept for compatibility with existing deployments
+    ...
 ```
+
+To swap a model, change its entry (URL, config, checksum) and redeploy.
 
 ### Package.json Scripts
 
@@ -465,10 +474,10 @@ python3 -m http.server 8080
 ### Testing Modal Functions Locally
 
 ```bash
-# Run Modal function locally (without deploying)
-modal run modal_app_zfturbo_complete.py::main
+# Serve a service with hot reload on a temporary dev URL (without deploying)
+modal serve modal_app_zfturbo_complete.py
 
-# Or test via Modal shell
+# Or open a shell inside the service image
 modal shell modal_app_zfturbo_complete.py
 ```
 
@@ -586,16 +595,19 @@ In Vercel Dashboard:
 
 #### 1. Modal Deployment Fails
 
-**Error:** `ModuleNotFoundError: No module named 'torch'`
+**Error:** `401 Client Error` / `Access to model ... is restricted` while building or on first use
 
-**Solution:**
-```python
-# Check modal_app image definition
-zfturbo_image = modal.Image.debian_slim(python_version="3.11").pip_install([
-    "torch>=2.0.1",  # Ensure torch is listed
-    # ... other dependencies
-])
+**Solution:** The `huggingface` secret is missing, or its token belongs to an account that has not
+accepted the MuScriptor / Stable Audio Open licenses (see Step 5).
+
+```bash
+modal secret list   # must contain "huggingface"
 ```
+
+**Error:** `sha256sum: WARNING: 1 computed checksum did NOT match`
+
+**Solution:** A pinned separation checkpoint changed upstream. Check the URL and checksum in
+`SEPARATION_MODELS` in `modal_app_zfturbo_complete.py` before updating them.
 
 #### 2. Database Connection Fails
 
@@ -649,24 +661,17 @@ vercel logs
 **Error:** `RuntimeError: CUDA out of memory`
 
 **Solution:**
-```python
-# Reduce segment size in modal_app
-config = {
-    "segment_size": 15,  # Reduce from 25
-    "batch_size": 1,
-    "use_half_precision": True  # Enable FP16
-}
-
-# Clear GPU cache
-torch.cuda.empty_cache()
-```
+- Disable TTA for very long tracks (it doubles the work per segment)
+- Or move the function to a larger GPU, e.g. `gpu="l40s"` or `gpu="a100"` in `@app.function`,
+  and redeploy
+- Check the logs: `modal app logs music-ai-separator-zfturbo-complete`
 
 ### Getting Help
 
 If you encounter issues not covered here:
 
-1. Check [GitHub Issues](https://github.com/KleinDigitalSolutions/XO-master/issues)
-2. Review Modal Logs: `modal logs <app-name>`
+1. Check [GitHub Issues](https://github.com/dreamtelligence/XO-master/issues)
+2. Review Modal Logs: `modal app logs <app-name>`
 3. Review Vercel Logs: `vercel logs`
 4. Check Supabase Logs in dashboard
 5. Create a new issue with:

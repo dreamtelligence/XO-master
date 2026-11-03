@@ -146,7 +146,7 @@ git clone https://github.com/<your-username>/XO-master.git
 cd XO-master
 
 # Add upstream remote
-git remote add upstream https://github.com/KleinDigitalSolutions/XO-master.git
+git remote add upstream https://github.com/dreamtelligence/XO-master.git
 ```
 
 ### 2. Create a Branch
@@ -246,7 +246,7 @@ git push origin feature/your-feature-name
 
 ### 7. Create Pull Request
 
-1. Go to [github.com/KleinDigitalSolutions/XO-master](https://github.com/KleinDigitalSolutions/XO-master)
+1. Go to [github.com/dreamtelligence/XO-master](https://github.com/dreamtelligence/XO-master)
 2. Click "Pull Requests" → "New Pull Request"
 3. Select your fork and branch
 4. Fill in the PR template (see below)
@@ -358,16 +358,16 @@ var audioService={processAudio:function(file,options){formData=new FormData();fo
 # ✅ Good
 def separate_audio(
     audio_bytes: bytes,
-    model: str = "bs_roformer",
-    segment_size: int = 25
+    model: str = "stems",
+    use_tta: bool = False
 ) -> dict[str, bytes]:
     """
     Separates audio into stems using specified model.
 
     Args:
         audio_bytes: Input audio file as bytes
-        model: Model name (bs_roformer, htdemucs, etc.)
-        segment_size: Segment size for processing (larger = better quality)
+        model: Model key ("stems" = SCNet XL IHF, "vocals" = Mel-Band RoFormer)
+        use_tta: Test-time augmentation (better quality, about twice as slow)
 
     Returns:
         Dictionary mapping stem names to audio bytes
@@ -380,15 +380,14 @@ def separate_audio(
         raise ValueError(f"Unsupported model: {model}")
 
     try:
-        stems = model.separate(audio_bytes, segment_size=segment_size)
-        return stems
+        return run_separation(audio_bytes, model, use_tta=use_tta)
     except torch.cuda.OutOfMemoryError:
-        logger.warning("GPU OOM, retrying with smaller segments")
-        return model.separate(audio_bytes, segment_size=15)
+        logger.warning("GPU OOM, retrying without TTA")
+        return run_separation(audio_bytes, model, use_tta=False)
 
 # ❌ Bad
-def separate(a,m="bs_roformer",s=25):
-    return m.separate(a,s)
+def separate(a,m="stems",t=False):
+    return run_separation(a,m,t)
 ```
 
 ### SQL / Database
@@ -459,7 +458,7 @@ def test_separate_audio_success():
     with open('test_audio.mp3', 'rb') as f:
         audio_bytes = f.read()
 
-    result = separate_audio(audio_bytes, model='bs_roformer')
+    result = separate_audio(audio_bytes, model='stems')
 
     assert 'vocals' in result
     assert 'drums' in result
@@ -524,15 +523,15 @@ Use JSDoc/docstrings for all public functions:
  *
  * @param {File} audioFile - Audio file to process
  * @param {Object} options - Processing options
- * @param {string} options.model - Model name (bs_roformer, htdemucs)
- * @param {number} options.segmentSize - Segment size (default: 25)
+ * @param {string} options.model - Model key ('stems' = SCNet XL IHF, 'vocals' = Mel-Band RoFormer)
+ * @param {boolean} options.useTta - Test-time augmentation (default: false)
  * @returns {Promise<Object>} Separated audio stems
  * @throws {Error} If processing fails or credits insufficient
  *
  * @example
  * const stems = await processAudio(file, {
- *   model: 'bs_roformer',
- *   segmentSize: 25
+ *   model: 'stems',
+ *   useTta: false
  * })
  */
 async function processAudio(audioFile, options) {

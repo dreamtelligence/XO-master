@@ -8,7 +8,7 @@ Klein Digital Solutions AI Music Studio - Professional AI-powered music service 
 
 **Tech Stack:**
 - Frontend: Vanilla JavaScript + Bootstrap 5.3 (SPA hosted on Vercel)
-- Backend: Modal Labs serverless functions (Python 3.11 + FastAPI)
+- Backend: Modal Labs serverless functions (Python 3.11, transcription on 3.12 + FastAPI)
 - GPU: NVIDIA A10G (24GB VRAM)
 - Payment: Stripe with credit system
 - Database: Supabase (PostgreSQL with RLS)

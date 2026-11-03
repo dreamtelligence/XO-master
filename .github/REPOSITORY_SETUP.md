@@ -329,11 +329,11 @@ Then on GitHub:
 First production-ready version of the AI Music Studio Platform.
 
 ### ✨ Features
-- 🎵 Music Source Separation (BS-RoFormer)
-- 🎛️ AI Audio Mastering
-- 🎼 Music Transcription (MIDI)
-- 🎙️ Speech Enhancement (DeepFilterNet + Whisper)
-- 🎧 Audio Generation (AudioLDM)
+- 🎵 Music Source Separation (SCNet XL IHF + Mel-Band RoFormer)
+- 🎛️ AI Audio Mastering (pedalboard chain)
+- 🎼 Music Transcription (MuScriptor + beat_this + essentia)
+- 🎙️ Speech Enhancement (MossFormer2 + Whisper large-v3-turbo + AST)
+- 🎧 Audio Generation (Stable Audio Open 1.0, API only)
 
 ### 🏗️ Infrastructure
 - Serverless GPU computing with Modal Labs

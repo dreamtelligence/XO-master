@@ -35,11 +35,11 @@ ai-music-studio/
 │   └── paywall.js                          # Credit verification
 │
 ├── 📁 Modal AI Services (Python)
-│   ├── modal_app_zfturbo_complete.py       # BS-RoFormer separation (32KB)
-│   ├── modal_app_enhancement.py            # Speech enhancement (25KB)
-│   ├── modal_app_matchering.py             # Audio mastering (42KB)
-│   ├── modal_app_transcription.py          # MIDI transcription (61KB)
-│   └── modal_app_audio_generation.py       # Audio generation (16KB)
+│   ├── modal_app_zfturbo_complete.py       # SCNet XL IHF + Mel-Band RoFormer separation (26KB)
+│   ├── modal_app_enhancement.py            # MossFormer2 + Whisper turbo + AST (27KB)
+│   ├── modal_app_matchering.py             # pedalboard mastering chain (41KB)
+│   ├── modal_app_transcription.py          # MuScriptor + beat_this + essentia (47KB)
+│   └── modal_app_audio_generation.py       # Stable Audio Open 1.0 (12KB)
 │
 ├── 📁 public/
 │   ├── header.webp                         # Hero image (85KB)

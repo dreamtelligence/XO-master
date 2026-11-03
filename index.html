@@ -7,8 +7,8 @@
     <title>Klein Digital Solutions - AI Music Studio | Music Mastering, Stem Separation, Speech Enhancement & Audio Processing</title>
     
     <!-- SEO Meta Tags -->
-    <meta name="description" content="Professional AI-powered music studio with stem separation, mastering, speech enhancement, and audio processing. Separate vocals, drums, bass with BS-RoFormer. AI audio enhancement, noise reduction, podcast processing, and MIDI transcription. Music production tools for creators and professionals.">
-    <meta name="keywords" content="music mastering service, stem generation, music separation, AI mastering, vocal isolation, stem separation, speech enhancement, audio enhancement, noise reduction, podcast processing, voice processing, AI audio tools, MIDI transcription, audio generation, Musik Stem Generierung, BS-RoFormer, automatic mastering, mastering service, music production, audio processing, Klein Digital Solutions, Musik Mastering Service, Stem Generierung, Speech Enhancement, Audio Enhancement, Podcast Bearbeitung">
+    <meta name="description" content="Professional AI-powered music studio with stem separation, mastering, speech enhancement, and audio processing. Separate vocals, drums, bass with SCNet XL and Mel-Band RoFormer. AI audio enhancement, noise reduction, podcast processing, and MIDI transcription. Music production tools for creators and professionals.">
+    <meta name="keywords" content="music mastering service, stem generation, music separation, AI mastering, vocal isolation, stem separation, speech enhancement, audio enhancement, noise reduction, podcast processing, voice processing, AI audio tools, MIDI transcription, audio generation, Musik Stem Generierung, SCNet, Mel-Band RoFormer, automatic mastering, mastering service, music production, audio processing, Klein Digital Solutions, Musik Mastering Service, Stem Generierung, Speech Enhancement, Audio Enhancement, Podcast Bearbeitung">
     <meta name="author" content="Klein Digital Solutions">
     <meta name="robots" content="index, follow">
     <meta name="language" content="en,de">
@@ -32,7 +32,7 @@
     
     <!-- German Meta Tags -->
     <meta name="description" lang="de" content="Professionelles AI Music Studio mit Stem-Separation, Mastering, Speech Enhancement und Audio-Verarbeitung. KI-Tools für Musikproduzenten, Podcaster und Content Creator. Rauschunterdrückung, Voice Processing und professionelle Audio-Enhancement.">
-    <meta name="keywords" lang="de" content="Musik Mastering Service, Musik Stem Generierung, Musikseparation, KI Mastering, Vocal Isolation, Stem Separation, Speech Enhancement, Audio Enhancement, Rauschunterdrückung, Podcast Bearbeitung, Voice Processing, KI Audio Tools, MIDI Transkription, Audio Generierung, BS-RoFormer, automatisches Mastering, Mastering Service, Musikproduktion, Audio Processing, Klein Digital Solutions, Stem Generierung, Sprach Enhancement, Audio Verbesserung">
+    <meta name="keywords" lang="de" content="Musik Mastering Service, Musik Stem Generierung, Musikseparation, KI Mastering, Vocal Isolation, Stem Separation, Speech Enhancement, Audio Enhancement, Rauschunterdrückung, Podcast Bearbeitung, Voice Processing, KI Audio Tools, MIDI Transkription, Audio Generierung, SCNet, Mel-Band RoFormer, automatisches Mastering, Mastering Service, Musikproduktion, Audio Processing, Klein Digital Solutions, Stem Generierung, Sprach Enhancement, Audio Verbesserung">
     
     <!-- Technical Meta Tags -->
     <meta name="theme-color" content="#4A90E2">
@@ -98,7 +98,7 @@
             "Silence Trimming",
             "Volume Normalization",
             "Loudness Targeting",
-            "AudioLDM AI Model",
+            "Stable Audio Open AI Model",
             "Musik Mastering Service",
             "Musik Stem Generierung", 
             "Musik Transkription",
@@ -1664,17 +1664,17 @@
                                     <div class="service-icon-wrapper mb-4" style="height: 80px; display: flex; align-items: center; justify-content: center;">
                                         <i class="fas fa-music fa-3x text-primary"></i>
                                     </div>
-                                    <h4 class="mb-3" style="font-size: 1.4rem; font-weight: 600;">🚀 Enhanced AI Stem Separation</h4>
-                                    <p class="text-muted mb-4 flex-grow-1" style="font-size: 1rem; line-height: 1.6;">BS-RoFormer (9.65dB SDR) + Asteroid Post-Processing + DSP Enhancement für verbesserte Qualität.</p>
+                                    <h4 class="mb-3" style="font-size: 1.4rem; font-weight: 600;">🚀 AI Stem Separation</h4>
+                                    <p class="text-muted mb-4 flex-grow-1" style="font-size: 1rem; line-height: 1.6;">SCNet XL IHF (9.92dB SDR) für 4 Stems + Mel-Band RoFormer für besonders saubere Vocals.</p>
                                     <div class="service-features mt-auto">
                                         <div class="feature-list text-start">
                                             <div class="feature-item mb-2">
                                                 <i class="fas fa-check text-success me-2" style="font-size: 0.9rem;"></i>
-                                                <span style="font-size: 0.95rem; font-weight: 500;"><strong>9.65dB SDR</strong> + Asteroid + DSP</span>
+                                                <span style="font-size: 0.95rem; font-weight: 500;"><strong>9.92dB SDR</strong> (SCNet XL IHF)</span>
                                             </div>
                                             <div class="feature-item mb-2">
                                                 <i class="fas fa-check text-success me-2" style="font-size: 0.9rem;"></i>
-                                                <span style="font-size: 0.95rem; font-weight: 500;">Ensemble + Asteroid Post-Processing</span>
+                                                <span style="font-size: 0.95rem; font-weight: 500;">Mel-Band RoFormer: Vocals 10.98dB SDR</span>
                                             </div>
                                             <div class="feature-item mb-2">
                                                 <i class="fas fa-check text-success me-2" style="font-size: 0.9rem;"></i>
@@ -1682,7 +1682,7 @@
                                             </div>
                                             <div class="feature-item">
                                                 <i class="fas fa-check text-success me-2" style="font-size: 0.9rem;"></i>
-                                                <span style="font-size: 0.95rem; font-weight: 500;">Professional DSP Enhancement</span>
+                                                <span style="font-size: 0.95rem; font-weight: 500;">Optional TTA &amp; Instrumental-Version</span>
                                             </div>
                                         </div>
                                     </div>
@@ -1736,15 +1736,15 @@
                                             </div>
                                             <div class="feature-item mb-2">
                                                 <i class="fas fa-check text-success me-2" style="font-size: 0.9rem;"></i>
-                                                <span style="font-size: 0.95rem; font-weight: 500;">Melodie-Transkription (basic-pitch)</span>
+                                                <span style="font-size: 0.95rem; font-weight: 500;">Melodie &amp; Instrumente (MuScriptor)</span>
                                             </div>
                                             <div class="feature-item mb-2">
                                                 <i class="fas fa-check text-success me-2" style="font-size: 0.9rem;"></i>
-                                                <span style="font-size: 0.95rem; font-weight: 500;">Drum-Pattern Analyse (madmom)</span>
+                                                <span style="font-size: 0.95rem; font-weight: 500;">Drum-Noten als MIDI (MuScriptor)</span>
                                             </div>
                                             <div class="feature-item mb-2">
                                                 <i class="fas fa-check text-success me-2" style="font-size: 0.9rem;"></i>
-                                                <span style="font-size: 0.95rem; font-weight: 500;">Beat & Tempo (madmom)</span>
+                                                <span style="font-size: 0.95rem; font-weight: 500;">Beat &amp; Tempo (beat_this)</span>
                                             </div>
                                             <div class="feature-item">
                                                 <i class="fas fa-check text-success me-2" style="font-size: 0.9rem;"></i>
@@ -1767,7 +1767,7 @@
                                         <div class="feature-list text-start">
                                             <div class="feature-item mb-2">
                                                 <i class="fas fa-check text-success me-2" style="font-size: 0.9rem;"></i>
-                                                <span style="font-size: 0.95rem; font-weight: 500;">DeepFilterNet Noise Reduction</span>
+                                                <span style="font-size: 0.95rem; font-weight: 500;">MossFormer2 Noise Reduction</span>
                                             </div>
                                             <div class="feature-item mb-2">
                                                 <i class="fas fa-check text-success me-2" style="font-size: 0.9rem;"></i>
@@ -1841,7 +1841,7 @@
                             <i class="fas fa-magic text-white" style="font-size: 2rem;"></i>
                         </div>
                         <h4 class="mb-3" style="font-weight: 600; color: #1e293b;">KI-gestützte Präzision</h4>
-                        <p style="color: #64748b; line-height: 1.6;">Modernste neuronale Netzwerke wie BS-RoFormer für höchste Genauigkeit bei der Audioverarbeitung.</p>
+                        <p style="color: #64748b; line-height: 1.6;">Modernste neuronale Netzwerke wie SCNet und Mel-Band RoFormer für höchste Genauigkeit bei der Audioverarbeitung.</p>
                     </div>
                 </div>
                 <div class="col-lg-4 col-md-6">
@@ -1979,8 +1979,8 @@
                                         <div class="form-check form-switch mb-4">
                                             <input class="form-check-input" type="checkbox" id="enhanced-mode" style="transform: scale(1.2);">
                                             <label class="form-check-label" for="enhanced-mode" style="cursor: pointer;">
-                                                <strong>🚀 Enhanced Mode aktivieren</strong> - <em>Asteroid + DSP Enhancement</em>
-                                                <p class="small text-primary mb-0">BS-RoFormer + Neural Post-Processing + Professional DSP</p>
+                                                <strong>🚀 Enhanced Mode</strong> - <em>derzeit nicht verfügbar</em>
+                                                <p class="small text-primary mb-0">Das Post-Processing-Backend ist nicht Teil dieser Version; verwendet wird SCNet XL IHF + Mel-Band RoFormer.</p>
                                             </label>
                                         </div>
 
@@ -2053,7 +2053,7 @@
                     <!-- File Upload -->
                     <div>
                         <h4 class="text-center mb-4">Laden Sie Ihre Datei hoch</h4>
-                        <p class="text-center text-muted mb-4">BS-RoFormer - State-of-the-Art Qualität mit schneller Verarbeitung.</p>
+                        <p class="text-center text-muted mb-4">SCNet XL IHF + Mel-Band RoFormer - State-of-the-Art Qualität.</p>
                         <div class="upload-zone" id="upload-zone">
                             <i class="fas fa-cloud-upload-alt fa-3x mb-3 text-muted"></i>
                             <h4>Drag & Drop Ihre Musik-Datei hier</h4>
@@ -2491,7 +2491,7 @@
                                         <div class="form-check form-switch mb-3 p-3 border rounded">
                                             <input class="form-check-input" type="checkbox" id="task-melody" checked>
                                             <label class="form-check-label" for="task-melody">
-                                                <strong>🎹 Melodie & Instrumente (basic-pitch)</strong>
+                                                <strong>🎹 Melodie & Instrumente (MuScriptor)</strong>
                                                 <p class="small text-muted mb-0">Generiert eine saubere MIDI-Datei von polyphonen Instrumenten. Perfekt, um Melodien in Ihrer DAW mit eigenen VSTs nachzuspielen.</p>
                                             </label>
                                         </div>
@@ -2499,8 +2499,8 @@
                                         <div class="form-check form-switch mb-3 p-3 border rounded">
                                             <input class="form-check-input" type="checkbox" id="task-drums">
                                             <label class="form-check-label" for="task-drums">
-                                                <strong>🥁 Drums & Percussion (madmom)</strong>
-                                                <p class="small text-muted mb-0">Erkennt präzise Drum-Anschläge (Onsets) und erstellt ein exaktes Rhythmus-Grid. Ideal, um Drum-Samples auszutauschen oder zu synchronisieren.</p>
+                                                <strong>🥁 Drums & Percussion (MuScriptor)</strong>
+                                                <p class="small text-muted mb-0">Erkennt Drum-Anschläge als echte MIDI-Noten. Ideal, um Drum-Samples auszutauschen oder den Groove nachzubauen.</p>
                                             </label>
                                         </div>
                                         <!-- Chords -->
@@ -2515,7 +2515,7 @@
                                         <div class="form-check form-switch p-3 border rounded">
                                             <input class="form-check-input" type="checkbox" id="task-beats">
                                             <label class="form-check-label" for="task-beats">
-                                                <strong>⏱️ Beat & Tempo (madmom)</strong>
+                                                <strong>⏱️ Beat & Tempo (beat_this)</strong>
                                                 <p class="small text-muted mb-0">Erstellt ein perfektes Tempo-Grid (Click Track), auch bei variierendem Tempo. Die Grundlage für jeden Remix und jedes Sample.</p>
                                             </label>
                                         </div>
@@ -2596,7 +2596,7 @@
                                             <input class="form-check-input" type="checkbox" id="enhancement-noise-reduction" checked>
                                             <label class="form-check-label" for="enhancement-noise-reduction">
                                                 <strong>🔧 Noise Reduction</strong>
-                                                <p class="small text-muted mb-0">Entfernt Hintergrundgeräusche, Rauschen und Störungen mit DeepFilterNet AI</p>
+                                                <p class="small text-muted mb-0">Entfernt Hintergrundgeräusche, Rauschen und Störungen mit MossFormer2 AI</p>
                                             </label>
                                         </div>
                                         
@@ -2631,7 +2631,7 @@
                                             <input class="form-check-input" type="checkbox" id="enhancement-cough-detection">
                                             <label class="form-check-label" for="enhancement-cough-detection">
                                                 <strong>🤧 Cough Detection (Premium)</strong>
-                                                <p class="small text-muted mb-0">Automatische Erkennung und Entfernung von Husten mit YAMNet AI</p>
+                                                <p class="small text-muted mb-0">Automatische Erkennung und Entfernung von Husten, Räuspern und Klicks mit AST AI</p>
                                             </label>
                                         </div>
                                         
@@ -7018,7 +7018,7 @@ let lastModelUsed = null;
             infoDiv.innerHTML = `
                 <i class="fas fa-info-circle me-1"></i>
                 Enhancement abgeschlossen • Job ID: ${result.job_id}<br>
-                <strong>DeepFilterNet + Whisper + YAMNet</strong> - 
+                <strong>MossFormer2 + Whisper + AST</strong> - 
                 Professional Speech Enhancement
             `;
             downloadLinksContainer.appendChild(infoDiv);

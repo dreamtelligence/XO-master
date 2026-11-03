@@ -53,11 +53,14 @@ This document provides a comprehensive overview of the AI Music Studio Platform 
                                           ┌──────────────────────┐
                                           │  NVIDIA A10G GPU     │
                                           │  (24GB VRAM)         │
-                                          │  ├─ BS-RoFormer      │
-                                          │  ├─ DeepFilterNet    │
-                                          │  ├─ Whisper AI       │
-                                          │  ├─ AudioLDM         │
-                                          │  └─ basic-pitch      │
+                                          │  ├─ SCNet XL IHF     │
+                                          │  ├─ Mel-Band RoFormer│
+                                          │  ├─ MossFormer2      │
+                                          │  ├─ Whisper turbo    │
+                                          │  ├─ AST (AudioSet)   │
+                                          │  ├─ Stable Audio Open│
+                                          │  ├─ MuScriptor       │
+                                          │  └─ beat_this        │
                                           └──────────────────────┘
 ```
 
@@ -278,73 +281,62 @@ Each Modal app is a standalone FastAPI service with:
 - Volume storage for model weights
 - Auto-scaling based on demand
 
-**Example: Music Separation Service**
+**Example: Music Separation Service** (simplified from `modal_app_zfturbo_complete.py`)
 
 ```python
-# modal_app_zfturbo_complete.py
 import modal
 
-app = modal.App("music-ai-separator")
+app = modal.App("music-ai-separator-zfturbo-complete")
 
-# Custom image with PyTorch, BS-RoFormer, etc.
-zfturbo_image = modal.Image.debian_slim(python_version="3.11").pip_install([
-    "torch>=2.0.1",
-    "torchaudio",
-    "einops",
-    "rotary_embedding_torch",
-    # ... 30+ ML dependencies
-])
+# Volume for uploads, job status and result files
+volume = modal.Volume.from_name("music-files-storage", create_if_missing=True)
+storage_path = "/vol/music_files"
 
-# Persistent volume for model weights
-volume = modal.Volume.from_name("music-models", create_if_missing=True)
+# ZFTurbo repo pinned to a fixed commit; SCNet XL IHF and Mel-Band RoFormer weights are
+# downloaded at build time and verified against SHA-256 checksums
+zfturbo_image = (
+    modal.Image.debian_slim(python_version="3.11")
+    .apt_install(["ffmpeg", "libsndfile1", "git", "curl", "build-essential"])
+    .run_commands([f"git clone {ZFTURBO_REPO} {ZFTURBO_DIR}",
+                   f"cd {ZFTURBO_DIR} && git checkout {ZFTURBO_COMMIT}",
+                   "pip install -r /tmp/requirements.txt"])
+    .pip_install(["fastapi[standard]", "python-multipart", "requests"])
+    .run_commands(_download_commands())  # wget + sha256sum -c per checkpoint
+)
 
 @app.function(
-    gpu="A10G",                    # NVIDIA A10G (24GB VRAM)
-    timeout=600,                   # 10 minute max
     image=zfturbo_image,
-    volumes={"/models": volume},
-    memory=16384                   # 16GB RAM
+    gpu="a10g",                    # NVIDIA A10G (24GB VRAM)
+    timeout=1800,                  # 30 minute max
+    memory=20480,                  # 20GB RAM
+    volumes={storage_path: volume},
+    scaledown_window=120,
 )
-def separate_audio(audio_bytes: bytes, model: str = "bs_roformer"):
+def bs_roformer_separate_audio(audio_data: bytes, filename: str, job_id: str,
+                               selected_stems: str = "all", use_tta: bool = False,
+                               extract_instrumental: bool = False) -> dict:
     """
-    Separates audio into stems using BS-RoFormer model
-
-    Args:
-        audio_bytes: Input audio file bytes
-        model: Model name (bs_roformer, htdemucs, etc.)
-
-    Returns:
-        dict: { vocals, drums, bass, other } as base64 WAV files
+    SCNet XL IHF -> vocals, drums, bass, other
+    Mel-Band RoFormer (KimberleyJensen) -> cleaner vocals / instrumental
+    (function name kept for compatibility with existing deployments)
     """
-    # Load audio
-    audio = load_audio_from_bytes(audio_bytes)
+    # 1. Convert the upload to 44.1kHz stereo WAV with ffmpeg
+    # 2. run_zfturbo_inference("stems", ...)  -> ZFTurbo inference.py --model_type scnet
+    # 3. run_zfturbo_inference("vocals", ...) -> ZFTurbo inference.py --model_type mel_band_roformer
+    # 4. Write stems, 30s previews and all.zip to the volume, update job status
+    ...
 
-    # Load model (cached on volume)
-    model = load_model(model, device="cuda")
-
-    # Process with optimized parameters
-    stems = model.separate(
-        audio,
-        segment_size=25,      # Large segments for quality
-        overlap=0.25,
-        num_shifts=2,         # Ensemble for better results
-        device="cuda"
-    )
-
-    # Return as ZIP file
-    return create_zip(stems)
-
-@app.local_entrypoint()
-def main():
-    # Deploy: modal deploy modal_app_zfturbo_complete.py
-    pass
+@app.function(image=zfturbo_image, volumes={storage_path: volume})
+@modal.asgi_app()
+def fastapi_app():
+    return create_fastapi_app()  # upload, status, download and health routes
 ```
 
 **Modal Services Overview:**
 
 | Service | GPU Memory | Avg Processing Time | Cost per Track |
 |---------|------------|---------------------|----------------|
-| BS-RoFormer Separation | 8-12GB | 45-120s | €0.014-€0.037 |
+| SCNet + Mel-Band RoFormer Separation | 8-12GB | 45-120s | €0.014-€0.037 |
 | Speech Enhancement | 4-6GB | 15-30s | €0.005-€0.010 |
 | AI Mastering | 2-4GB | 30-60s | €0.010-€0.020 |
 | Music Transcription | 6-8GB | 20-45s | €0.006-€0.017 |
@@ -610,41 +602,46 @@ if (req.body.webhookSecret !== process.env.CREDIT_WEBHOOK_SECRET) {
 ### Model Deployment Strategy
 
 **1. Model Storage:**
-- Modal persistent volumes (cached between invocations)
-- HuggingFace Hub for model weights
-- Custom model checkpoints in volume
+- Weights are downloaded at image build time and baked into the container images
+  (separation checkpoints pinned to fixed URLs/commits and verified with SHA-256)
+- Exception: the gated MuScriptor weights are cached in the `muscriptor-hf-cache` volume on first use
+- Gated Hugging Face models (MuScriptor, Stable Audio Open) need a Modal secret `huggingface` with `HF_TOKEN`
+- Modal volumes hold uploads, job status and result files, not model weights
 
-**2. Inference Optimization:**
+**2. Models per service:**
+
+| Service | File | Models |
+|---------|------|--------|
+| Separation | `modal_app_zfturbo_complete.py` | SCNet XL IHF (4 stems), Mel-Band RoFormer (vocals/instrumental) |
+| Speech Enhancement | `modal_app_enhancement.py` | MossFormer2_SE_48K, Whisper large-v3-turbo, AST (AudioSet) |
+| Transcription | `modal_app_transcription.py` | MuScriptor large, beat_this, essentia (chords, key) |
+| Generation | `modal_app_audio_generation.py` | Stable Audio Open 1.0 |
+| Mastering | `modal_app_matchering.py` | pedalboard DSP chain (no neural model) |
+
+**3. Inference (separation):**
 ```python
-# BS-RoFormer optimization parameters
-config = {
-    "segment_size": 25,          # Larger = better quality, slower
-    "overlap": 0.25,             # 25% overlap between segments
-    "num_shifts": 2,             # Ensemble predictions
-    "batch_size": 1,             # GPU memory constraint
-    "use_half_precision": False, # Float32 for quality
-}
+# The separation service calls ZFTurbo's inference.py once per model
+cmd = [
+    "python", f"{ZFTURBO_DIR}/inference.py",
+    "--model_type", model["model_type"],          # "scnet" or "mel_band_roformer"
+    "--config_path", f"{MODEL_DIR}/{model['config_file']}",
+    "--start_check_point", f"{MODEL_DIR}/{model['model_file']}",
+    "--input_folder", str(input_dir),
+    "--store_dir", str(store_dir),
+    "--device_ids", "0",
+]
+if use_tta:
+    cmd.append("--use_tta")                       # test-time augmentation: better quality, ~2x time
+if extract_instrumental:
+    cmd.append("--extract_instrumental")
 
-# GPU memory management
-torch.cuda.empty_cache()  # Clear before each job
-model = model.to('cuda')  # Explicit GPU placement
+env["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"  # reduce GPU memory fragmentation
+subprocess.run(cmd, capture_output=True, text=True, timeout=1500, env=env, cwd=ZFTURBO_DIR)
 ```
 
-**3. Error Handling & Retries:**
-```python
-@app.function(retries=2)  # Auto-retry on failure
-def process_audio(file):
-    try:
-        result = model.inference(file)
-        return result
-    except torch.cuda.OutOfMemoryError:
-        # Fallback to smaller segments
-        return model.inference(file, segment_size=15)
-    except Exception as e:
-        # Log error and return graceful failure
-        logger.error(f"Processing failed: {e}")
-        raise
-```
+**4. Error Handling:**
+- Each job writes its status (progress, phase, error) to the volume; the frontend polls it
+- A failed inference run sets the job status to `error` with the last part of stderr, instead of hanging
 
 ---
 
