@@ -4,6 +4,7 @@ import contextlib
 import fcntl
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -30,6 +31,8 @@ TOOLS = {
     "deepfilter": "deepfilter", "rnnoise": "rnnoise", "audiosr": "audiosr", "cut": "ffmpeg", "export": "ffmpeg",
     **{key: key for key in modal_adapter.ROUTES},
 }
+JOB_FAILURE = "Der Auftrag ist fehlgeschlagen. Prüfe die Eingabe und versuche es erneut."
+logger = logging.getLogger(__name__)
 TERMINAL = {"completed", "partial", "failed", "cancelled", "submission_unknown", "output_unconfirmed"}
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -87,6 +90,12 @@ def record(row):
     for key in ("draft", "meta", "parents", "params", "inputs", "snapshot"):
         if key in result:
             result[key] = json.loads(result[key])
+    if result.get("state") == "failed" and (message := result.get("error")):
+        if result.get("tool") == "reference" and "4005: The TARGET and REFERENCE" in message:
+            result["error"] = "Mix und Referenz enthalten dasselbe Audio. Wähle eine andere Referenzspur."
+        elif message.startswith("python:") or "Traceback" in message or "is not JSON serializable" in message:
+            result["error"] = ("Das Ergebnis konnte lokal nicht gespeichert werden. Prüfe den Cloud-Status."
+                               if result.get("remote_id") else JOB_FAILURE)
     return result
 
 
@@ -620,9 +629,13 @@ class Store:
                         state, phase = "failed", "Transfer nicht abgeschlossen"
                     self.update(job["id"], state=state, phase=phase, error=str(error)[:400], progress=None)
             except Exception as error:
-                message = str(error).replace(str(self.root), "[lokaler Speicher]")[:500]
+                if isinstance(error, (Problem, engines.UserError, modal_adapter.CloudHTTPError)):
+                    message = str(error)
+                else:
+                    logger.warning("Workspace job %s (%s) failed: %s", job["id"], job["tool"], type(error).__name__)
+                    message = JOB_FAILURE
                 self.update(job["id"], state="failed", phase="Verarbeitung fehlgeschlagen",
-                            error=message or type(error).__name__, progress=None)
+                            error=message, progress=None)
 
     def execute(self, job, cloud):
         id, project_id, tool, params = (job[key] for key in ("id", "project", "tool", "params"))
@@ -718,6 +731,8 @@ class Store:
                                         "params": job["params"], "project": job["snapshot"]["project"]}))
         raw, _ = engines.run([sys.executable, "-m", "studio.worker", description], cancelled)
         outputs = json.loads(raw)
+        if isinstance(outputs, dict):
+            raise Problem(outputs["error"])
         for filename, role, metadata in outputs:
             yield Path(filename), role, metadata
 

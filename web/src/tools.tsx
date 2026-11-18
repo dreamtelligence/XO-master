@@ -75,13 +75,15 @@ export function Inspector(p: Props) {
   const ready = ['ready', 'experimental'].includes(p.caps?.tools[tool] ?? '')
   const usesMany = tool === 'mix' || tool === 'stretch'
   const refs = p.assets.filter(item => item.role === 'reference' && item.id !== asset?.id)
-  const reference = str('reference', refs[0]?.id || '')
+  const defaultReference = refs.find(item => item.hash !== asset?.hash) ?? refs[0]
+  const reference = str('reference', defaultReference?.id || '')
+  const identicalReference = tool === 'reference' && refs.find(item => item.id === reference)?.hash === asset?.hash && Boolean(asset)
   const inputs = tool === 'generation' ? [] : usesMany ? (selected.length ? selected : asset ? [asset] : [])
     : asset ? tool === 'reference' && reference ? [asset, ...refs.filter(ref => ref.id === reference)] : [asset] : []
   const chain = (settings.chain as Effect[] | undefined) ?? [{ effect: 'Gain' }, { effect: 'Compressor' }]
   const needsAudio = tool !== 'midi' && tool !== 'generation'
   const supported = tool === 'midi' ? asset?.role === 'midi' : tool === 'generation' ? str('prompt', '').trim().length > 0 : inputs.length > 0 && inputs.every(item => audio(item) || (tool === 'stretch' && item.role === 'midi')) && inputs.some(audio)
-  const disabled = p.busy || !!project.archived || !ready || !supported || (cloud.has(tool) && project.purpose === 'release') || (tool === 'reference' && inputs.length !== 2) || (tool === 'cut' && !p.slices.length) || (tool === 'effects' && !chain.length)
+  const disabled = p.busy || !!project.archived || !ready || !supported || (cloud.has(tool) && project.purpose === 'release') || (tool === 'reference' && (inputs.length !== 2 || identicalReference)) || (tool === 'cut' && !p.slices.length) || (tool === 'effects' && !chain.length)
   const rate = asset?.meta.rate || project.rate
   const duration = asset?.meta.samples || 0
   const options = (key: string, label: string, fallback: string, choices: [string, string][]) =>
@@ -162,7 +164,7 @@ export function Inspector(p: Props) {
     })}</div>,
     mastering: <>{options('intensity', 'Intensität', 'medium', [['low', 'Sanft'], ['medium', 'Mittel'], ['high', 'Stark']])}
       <div className="field-grid">{field('lufs', 'Ziel · LUFS', -14, -30, -8, .1)}{field('true_peak', 'Grenze · dBTP', -1, -6, -.1, .1)}</div></>,
-    reference: <>{options('reference', 'Referenz im Projekt', refs[0]?.id || '', refs.length ? refs.map(item => [item.id, item.name]) : [['', 'Referenzdatei importieren']])}</>,
+    reference: <>{options('reference', 'Referenz im Projekt', defaultReference?.id || '', refs.length ? refs.map(item => [item.id, item.name]) : [['', 'Referenzdatei importieren']])}</>,
     enhancement: <>{check('suggestions', 'Transkript und Schnittvorschläge anfragen')}{check('disturbances', 'Störgeräusche zur Prüfung markieren (AST)')}</>,
     deepfilter: <p className="hint">Denoising mit Delay-Kompensation. Die Originaldatei bleibt im Projekt.</p>,
     rnnoise: <p className="hint">Sprache wird für den Modelllauf in 48 kHz Mono konvertiert.</p>,
@@ -182,7 +184,7 @@ export function Inspector(p: Props) {
     <div className="render-actions">
       {['effects', 'stretch', 'deepfilter', 'rnnoise'].includes(tool) && <button disabled={disabled || !region || (tool === 'stretch' && inputs.length > 1)} onClick={() => submit(true)}>Auswahlvorschau rendern</button>}
       <button className="primary" disabled={disabled} onClick={() => submit(tool === 'audiosr')}>{action}</button>
-      {disabled && !p.busy && <p className="hint">{project.archived ? 'Aktiviere das Projekt zuerst wieder.' : !ready ? 'Diese Engine ist in der lokalen Installation noch nicht eingerichtet.' : cloud.has(tool) && project.purpose === 'release' ? 'Für Veröffentlichungsprojekte ist dieses Modell hier nicht freigegeben.' : tool === 'reference' && inputs.length !== 2 ? 'Wähle einen Mix und importiere eine Referenz.' : tool === 'cut' ? 'Füge mindestens einen bestätigten Schnitt hinzu.' : tool === 'effects' && !chain.length ? 'Füge mindestens einen Effekt hinzu.' : tool === 'generation' ? 'Gib einen Prompt ein.' : 'Wähle passendes Projektmaterial.'}</p>}
+      {disabled && !p.busy && <p className="hint">{project.archived ? 'Aktiviere das Projekt zuerst wieder.' : !ready ? 'Diese Engine ist in der lokalen Installation noch nicht eingerichtet.' : cloud.has(tool) && project.purpose === 'release' ? 'Für Veröffentlichungsprojekte ist dieses Modell hier nicht freigegeben.' : identicalReference ? 'Mix und Referenz enthalten dasselbe Audio. Wähle eine andere Referenzspur.' : tool === 'reference' && inputs.length !== 2 ? 'Wähle einen Mix und importiere eine Referenz.' : tool === 'cut' ? 'Füge mindestens einen bestätigten Schnitt hinzu.' : tool === 'effects' && !chain.length ? 'Füge mindestens einen Effekt hinzu.' : tool === 'generation' ? 'Gib einen Prompt ein.' : 'Wähle passendes Projektmaterial.'}</p>}
     </div>
   </div>
 }

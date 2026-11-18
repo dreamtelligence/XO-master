@@ -8,7 +8,7 @@ import time
 import uuid
 from urllib.parse import quote, urlsplit
 
-from audio_core.engines import Cancelled, ffmpeg, integer, number, qa, render_selection
+from audio_core.engines import Cancelled, UserError, ffmpeg, integer, number, qa, render_selection
 
 ROUTES = {
     "separation": ("/", "/status/{}", "/download/{}/final_stems", "audio_file"),
@@ -77,7 +77,7 @@ def call(config, tool, path, method="GET", fields=None, source=None, destination
                     while chunk := response.read(65536):
                         limit -= len(chunk)
                         if limit < 0:
-                            raise ValueError("Das Cloud-Ergebnis ist zu groß.")
+                            raise UserError("Das Cloud-Ergebnis ist zu groß.")
                         file.write(chunk)
                 return None
             return json.loads(response.read(1024 * 1024))
@@ -95,7 +95,7 @@ def workspace_capability(config, tool):
             raise
         return None
     if info.get("protocol") != 1 or not 256 * 1024 <= info.get("chunk_size", 0) <= 8 * 1024 * 1024:
-        raise ValueError("Der private Dienst meldet einen unbekannten Transfervertrag.")
+        raise UserError("Der private Dienst meldet einen unbekannten Transfervertrag.")
     return info
 
 
@@ -137,7 +137,7 @@ def render(config, job, inputs, directory, update, cancelled, project):
     if tool == "separation":
         stems = params.get("stems", ["vocals", "drums", "bass", "other"])
         if not isinstance(stems, list) or not stems or not set(stems) <= {"vocals", "drums", "bass", "other", "instrumental"}:
-            raise ValueError("Mindestens einen gültigen Stem auswählen.")
+            raise UserError("Mindestens einen gültigen Stem auswählen.")
         wanted = {stem + ".wav" for stem in stems}
         fields |= {"selected_stems": ",".join(sorted(set(stems) - {"instrumental"})) or "vocals",
                    "use_tta": str(bool(params.get("tta"))).lower(),
@@ -147,13 +147,13 @@ def render(config, job, inputs, directory, update, cancelled, project):
         wanted = {"mastered_24bit.wav"}
         intensity = params.get("intensity", "medium")
         if intensity not in ("low", "medium", "high"):
-            raise ValueError("Ungültige Mastering-Intensität.")
+            raise UserError("Ungültige Mastering-Intensität.")
         fields |= {"mastering_intensity": intensity, "output_formats": "24bit",
                    "bass_mono_making": "false", "lufs_targeting": "false"}
     if tool == "transcription":
         tasks = params.get("tasks", ["melody", "drums", "chords", "beat"])
         if not isinstance(tasks, list) or not tasks or not set(tasks) <= {"melody", "drums", "chords", "beat"}:
-            raise ValueError("Bitte passende Analysen auswählen.")
+            raise UserError("Bitte passende Analysen auswählen.")
         fields |= {name: str(name in tasks).lower() for name in ("melody", "drums", "chords", "beat")}
     if tool == "enhancement":
         fields["enhancement_options"] = json.dumps({
@@ -169,7 +169,7 @@ def render(config, job, inputs, directory, update, cancelled, project):
         prompt = str(params.get("prompt", "")).strip()
         negative = str(params.get("negative", "")).strip()
         if not 1 <= len(prompt) <= 800 or len(negative) > 800:
-            raise ValueError("Prompt benötigt 1–800 Zeichen. Negativprompt maximal 800 Zeichen.")
+            raise UserError("Prompt benötigt 1–800 Zeichen. Negativprompt maximal 800 Zeichen.")
         fields |= {"prompt": prompt, "negative_prompt": negative,
                    "audio_length": number(params.get("seconds", 8), 1, 47, "Dauer"),
                    "num_inference_steps": integer(params.get("steps", 50), 10, 100, "Schritte"),
@@ -184,7 +184,7 @@ def render(config, job, inputs, directory, update, cancelled, project):
         modern = capability is not None
         if recovered_start:
             if not modern:
-                raise ValueError("Cloud-Start unklar. Der Dienst kann den früheren Start nicht zuordnen.")
+                raise UserError("Cloud-Start unklar. Der Dienst kann den früheren Start nicht zuordnen.")
             recovered = call(config, tool, f"/workspace/jobs/{job['id']}")
             if recovered["status"] == "unknown":
                 raise ConnectionError("Cloud-Start unklar. Der Auftrag wurde zur Vermeidung von Doppelstarts nicht wiederholt.")
@@ -192,9 +192,9 @@ def render(config, job, inputs, directory, update, cancelled, project):
             update(remote_id=remote, call_id=recovered["call_id"])
         else:
             if not modern and tool == "separation" and fields["coherent"] == "true":
-                raise ValueError("Die geschützte Separation unterstützt den SCNet-Modus nach dem Workspace-Update.")
+                raise UserError("Die geschützte Separation unterstützt den SCNet-Modus nach dem Workspace-Update.")
             if tool == "audiosr" and not modern:
-                raise ValueError("AudioSR Basic benötigt den privaten Workspace-Dienst.")
+                raise UserError("AudioSR Basic benötigt den privaten Workspace-Dienst.")
             if inputs:
                 source = directory / "input.wav"
                 limit = capability["max_size"] if modern else (50 if tool == "mastering" else 100) * 1024 * 1024
@@ -207,7 +207,7 @@ def render(config, job, inputs, directory, update, cancelled, project):
                     opts = ["-ar", 48000, "-ac", 1]
                 ffmpeg("-i", raw_input, *opts, "-c:a", "pcm_s24le", source, cancelled=cancelled)
                 if source.stat().st_size > limit:
-                    raise ValueError(f"Die konvertierte Datei überschreitet das Dienstlimit von {limit // (1024 * 1024)} MB.")
+                    raise UserError(f"Die konvertierte Datei überschreitet das Dienstlimit von {limit // (1024 * 1024)} MB.")
             if modern:
                 payload = stage(config, tool, source, capability["chunk_size"], update, cancelled)
                 payload["options"] = {
@@ -243,7 +243,7 @@ def render(config, job, inputs, directory, update, cancelled, project):
         if status == "cancelled":
             raise Cancelled()
         if status == "error":
-            raise ValueError("Der private Dienst hat den Auftrag beendet: " + str(state.get("error") or status)[:350])
+            raise UserError("Der private Dienst hat die Verarbeitung abgebrochen. Prüfe die Eingabe und versuche es erneut.")
         if cancelled():
             if modern:
                 result = call(config, tool, f"/workspace/cancel/{remote}", "POST")
@@ -276,7 +276,7 @@ def render(config, job, inputs, directory, update, cancelled, project):
     if wanted:
         available &= wanted
     if not available:
-        raise ValueError("Der private Dienst hat keine nutzbaren Dateien geliefert.")
+        raise UserError("Der private Dienst hat keine nutzbaren Dateien geliefert.")
     for name in sorted(available):
         output = directory / name
         try:

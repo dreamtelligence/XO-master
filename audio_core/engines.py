@@ -22,6 +22,10 @@ INPUT_PROTOCOLS = "file,pipe"
 INPUT_FORMATS = "wav,aiff,flac,mp3,aac,ogg,mov,matroska,webm"
 
 
+class UserError(ValueError):
+    """An error whose message is suitable for the workspace interface."""
+
+
 class Cancelled(Exception):
     pass
 
@@ -45,7 +49,7 @@ def run(args, cancelled=lambda: False, timeout=900):
                     process.wait()
                     if cancelled():
                         raise Cancelled()
-                    raise ValueError("Die Audioverarbeitung hat das Zeitlimit erreicht.")
+                    raise UserError("Die Audioverarbeitung hat das Zeitlimit erreicht.")
                 time.sleep(0.08)
         stdout.seek(0)
         stderr.seek(0)
@@ -70,15 +74,15 @@ def probe(file):
                    "-of", "json", file], timeout=30)
     data = json.loads(data)
     if len(data.get("streams", [])) != 1:
-        raise ValueError("Die Datei benötigt genau einen Audiostream.")
+        raise UserError("Die Datei benötigt genau einen Audiostream.")
     audio = data["streams"][0]
     channels = audio["channels"]
     rate = int(audio["sample_rate"])
     if channels not in (1, 2):
-        raise ValueError("Bitte als Mono oder Stereo importieren. Mehrkanal-Audio zuerst abmischen.")
+        raise UserError("Bitte als Mono oder Stereo importieren. Mehrkanal-Audio zuerst abmischen.")
     duration = float(audio.get("duration", data["format"].get("duration", 0)))
     if not 0 < duration <= 1800 or not 8000 <= rate <= 192000:
-        raise ValueError("Unterstützt werden bis zu 30 Minuten und 8–192 kHz.")
+        raise UserError("Unterstützt werden bis zu 30 Minuten und 8–192 kHz.")
     frames = round(duration * rate)
     if audio.get("time_base") == f"1/{rate}" and "duration_ts" in audio:
         frames = int(audio["duration_ts"])
@@ -110,9 +114,9 @@ def peaks_and_listen(source, preview, meta, cancelled=lambda: False):
             clipped += sum(value >= 1 for value in finite)
             maximum = max(maximum, extreme)
         if process.wait() or not count:
-            raise ValueError("Audio konnte nicht vollständig dekodiert werden.")
+            raise UserError("Audio konnte nicht vollständig dekodiert werden.")
     if nonfinite:
-        raise ValueError(f"Audio enthält {nonfinite} nicht-finite Werte.")
+        raise UserError(f"Audio enthält {nonfinite} nicht-finite Werte.")
     meta.update(samples=count // meta["channels"], seconds=count / (meta["channels"] * meta["rate"]),
                 peaks=peaks, sample_peak=round(20 * math.log10(maximum), 2) if maximum else None,
                 clipped_samples=clipped, nonfinite_samples=nonfinite)
@@ -124,7 +128,7 @@ def qa(source, cancelled=lambda: False):
                   "silencedetect=n=-55dB:d=0.25,loudnorm=print_format=json", "-f", "null", "-"], cancelled)
     match = re.search(r'\{\s*"input_i".*?\}', log, re.S)
     if not match:
-        raise ValueError("Lautheit konnte nicht gemessen werden.")
+        raise UserError("Lautheit konnte nicht gemessen werden.")
     measures = json.loads(match[0])
     def finite(key):
         value = float(measures[key])
@@ -139,13 +143,13 @@ def qa(source, cancelled=lambda: False):
 
 def number(value, low, high, name):
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
-        raise ValueError(f"{name} muss zwischen {low} und {high} liegen.")
+        raise UserError(f"{name} muss zwischen {low} und {high} liegen.")
     return value
 
 
 def integer(value, low, high, name):
     if type(value) is not int:
-        raise ValueError(f"{name} muss ganzzahlig sein.")
+        raise UserError(f"{name} muss ganzzahlig sein.")
     return number(value, low, high, name)
 
 
@@ -246,12 +250,12 @@ def write_midi(path, view, bpm, meter, params):
     high = number(params.get("clip_end", 1800), low, 1800, "MIDI-Ende")
     tracks = view.get("tracks")
     if not isinstance(tracks, list) or not 1 <= len(tracks) <= 64:
-        raise ValueError("MIDI benötigt 1–64 Spuren.")
+        raise UserError("MIDI benötigt 1–64 Spuren.")
     for track in tracks:
         instrument = pretty_midi.Instrument(integer(track["program"], 0, 127, "Programm"),
                                             bool(track["drums"]), str(track["name"])[:80])
         if any(len(track.get(kind, [])) > 20000 for kind in ("notes", "bends", "controls")):
-            raise ValueError("MIDI-Spur enthält zu viele Ereignisse.")
+            raise UserError("MIDI-Spur enthält zu viele Ereignisse.")
         for a, b, key, velocity in track["notes"]:
             a, b = number(a, 0, 1800, "Notenstart"), number(b, a + 0.0001, 1800, "Notenende")
             if b <= low or a >= high:
@@ -260,7 +264,7 @@ def write_midi(path, view, bpm, meter, params):
             moved = max(0, a + (round((a - origin) / grid) * grid + origin - a) * quantize)
             shifted = integer(key, 0, 127, "Tonhöhe") + (0 if instrument.is_drum else pitch)
             if not 0 <= shifted <= 127:
-                raise ValueError("Transposition überschreitet den MIDI-Tonumfang.")
+                raise UserError("Transposition überschreitet den MIDI-Tonumfang.")
             instrument.notes.append(pretty_midi.Note(integer(velocity, 1, 127, "Velocity"),
                                                      shifted, moved, moved + b - a))
         for when, value in track.get("bends", []):
@@ -277,7 +281,7 @@ def write_midi(path, view, bpm, meter, params):
                 instrument.control_changes.append(pretty_midi.ControlChange(control, value, max(0, (when - low) * ratio)))
         midi.instruments.append(instrument)
     if not any(track.notes for track in midi.instruments):
-        raise ValueError("Die Auswahl enthält keine MIDI-Noten.")
+        raise UserError("Die Auswahl enthält keine MIDI-Noten.")
     midi.write(str(path))
 
 
@@ -310,7 +314,7 @@ def local_render(tool, inputs, params, project, directory, cancelled):
     if tool in ("loop", "oneshot"):
         regions = params.get("regions", [params])
         if not isinstance(regions, list) or not 1 <= len(regions) <= 128:
-            raise ValueError("Bitte 1–128 Regionen auswählen.")
+            raise UserError("Bitte 1–128 Regionen auswählen.")
         for i, choice in enumerate(regions, 1):
             output = directory / f"{'Loop' if tool == 'loop' else 'Treffer'} {i:02}.wav"
             if choice.get("snap_zero"):
@@ -336,15 +340,15 @@ def local_render(tool, inputs, params, project, directory, cancelled):
         ratio = source_bpm / target_bpm
         audio = [(path, item) for path, item in inputs if item["role"] != "midi"]
         if not audio:
-            raise ValueError("Tempo und Tonhöhe benötigen Audio.")
+            raise UserError("Tempo und Tonhöhe benötigen Audio.")
         if len(audio) > 1 and params.get("preview"):
-            raise ValueError("Auswahlvorschau ist für eine einzelne Audiodatei verfügbar.")
+            raise UserError("Auswahlvorschau ist für eine einzelne Audiodatei verfügbar.")
         rate = audio[0][1]["meta"]["rate"] if len(audio) == 1 else project["rate"]
         start, stop = region(meta, params) if params.get("preview") else (0, meta["samples"])
         if len(audio) > 1 and len({(item["meta"]["rate"], item["meta"]["samples"],
                                     item["meta"].get("project_offset", 0), item["meta"].get("bpm", bpm))
                                    for _, item in audio}) != 1:
-            raise ValueError("Gruppenrender braucht gleich ausgerichtete Spuren mit identischer Zeitbasis.")
+            raise UserError("Gruppenrender braucht gleich ausgerichtete Spuren mit identischer Zeitbasis.")
         length = round(Fraction(stop - start, meta["rate"]) * rate)
         all_inputs, labels = [], []
         for i, (path, item) in enumerate(audio):
@@ -382,7 +386,7 @@ def local_render(tool, inputs, params, project, directory, cancelled):
         for path, item in inputs:
             if item["role"] == "midi":
                 if pitch != int(pitch):
-                    raise ValueError("Gemeinsamer MIDI-Export unterstützt ganze Halbtöne.")
+                    raise UserError("Gemeinsamer MIDI-Export unterstützt ganze Halbtöne.")
                 target = directory / f"Tempo {item['id'][:6]}.mid"
                 write_midi(target, notes_from_file(path), target_bpm, meter, {"ratio": ratio, "transpose": int(pitch)})
                 yield target, "midi", details | {"source_asset": item["id"], "preview_render": False}
@@ -393,7 +397,7 @@ def local_render(tool, inputs, params, project, directory, cancelled):
         import soundfile as sf
         chain = params.get("chain", [])
         if not isinstance(chain, list) or not 1 <= len(chain) <= 12:
-            raise ValueError("Bitte 1–12 Effekte in die Kette legen.")
+            raise UserError("Bitte 1–12 Effekte in die Kette legen.")
         plugins = []
         for step in chain:
             effect = step["effect"]
@@ -412,7 +416,7 @@ def local_render(tool, inputs, params, project, directory, cancelled):
                     raise Cancelled()
                 block = reader.read(min(pending, 65536))
                 if not block.shape[-1]:
-                    raise ValueError("Audiodecoder lieferte weniger Samples als gemeldet.")
+                    raise UserError("Audiodecoder lieferte weniger Samples als gemeldet.")
                 writer.write(active(block, reader.samplerate, reset=False).T)
                 pending -= block.shape[-1]
             tail = round(number(params.get("tail", 0), 0, 5, "Ausklang") * reader.samplerate)
@@ -422,13 +426,20 @@ def local_render(tool, inputs, params, project, directory, cancelled):
         info = {"source_start": start, "source_rate": meta["rate"], "preview_render": bool(params.get("preview"))}
     elif tool == "reference":
         import matchering
+        from matchering.log import Code, ModuleError
+
         if len(inputs) != 2 or inputs[1][1]["role"] != "reference":
-            raise ValueError("Bitte Mix und Referenzspur auswählen.")
+            raise UserError("Bitte Mix und Referenzspur auswählen.")
         target_wav, reference_wav = directory / "Mix.wav", directory / "Referenz.wav"
         for path, wav in ((source, target_wav), (inputs[1][0], reference_wav)):
             ffmpeg("-i", path, "-c:a", "pcm_f32le", wav, cancelled=cancelled)
-        matchering.process(target=str(target_wav), reference=str(reference_wav),
-                           results=[matchering.pcm24(str(output))])
+        try:
+            matchering.process(target=str(target_wav), reference=str(reference_wav),
+                               results=[matchering.pcm24(str(output))])
+        except ModuleError as error:
+            if str(error).startswith(f"{int(Code.ERROR_TARGET_EQUALS_REFERENCE)}:"):
+                raise UserError("Mix und Referenz enthalten dasselbe Audio. Wähle eine andere Referenzspur.") from error
+            raise
         engine = version("matchering")
         info = qa(output, cancelled)
     elif tool == "basic_pitch":
@@ -462,7 +473,7 @@ def local_render(tool, inputs, params, project, directory, cancelled):
             run(["deepFilter", "--compensate-delay", "--output-dir", target, padded], cancelled)
             files = list(target.glob("*.wav"))
             if len(files) != 1 or probe(files[0])["samples"] < frames:
-                raise ValueError("DeepFilterNet hat keine vollständig zeitkompensierte Datei erzeugt.")
+                raise UserError("DeepFilterNet hat keine vollständig zeitkompensierte Datei erzeugt.")
             ffmpeg("-i", files[0], "-af", f"atrim=end_sample={frames}", "-c:a", "pcm_f32le", output, cancelled=cancelled)
             engine = "DeepFilterNet 0.5.6"
         else:
@@ -472,7 +483,7 @@ def local_render(tool, inputs, params, project, directory, cancelled):
             ffmpeg("-i", speech, "-af", f"apad=whole_len={padded_frames}", "-f", "s16le", raw_in, cancelled=cancelled)
             run(["rnnoise_demo", raw_in, raw_out], cancelled)
             if raw_out.stat().st_size < frames * 2:
-                raise ValueError("RNNoise hat weniger Samples geliefert als erwartet.")
+                raise UserError("RNNoise hat weniger Samples geliefert als erwartet.")
             ffmpeg("-f", "s16le", "-ar", 48000, "-ac", 1, "-i", raw_out, "-af",
                    f"atrim=end_sample={frames}", "-c:a", "pcm_f32le", output, cancelled=cancelled)
             engine = "RNNoise 70f1d25 / 48 kHz mono"
@@ -482,17 +493,17 @@ def local_render(tool, inputs, params, project, directory, cancelled):
     elif tool == "cut":
         cuts = params.get("cuts")
         if not isinstance(cuts, list) or not 1 <= len(cuts) <= 128:
-            raise ValueError("Bitte 1–128 geprüfte Schnitte auswählen.")
+            raise UserError("Bitte 1–128 geprüfte Schnitte auswählen.")
         mapping, last, result_sample = [], 0, 0
         for cut in sorted([region(meta, cut) for cut in cuts] + [(meta["samples"], meta["samples"])]):
             if cut[0] < last:
-                raise ValueError("Schnitte dürfen sich nicht überschneiden.")
+                raise UserError("Schnitte dürfen sich nicht überschneiden.")
             if cut[0] > last:
                 mapping.append({"source_start": last, "source_end": cut[0], "result_start": result_sample})
                 result_sample += cut[0] - last
             last = cut[1]
         if not mapping:
-            raise ValueError("Schnitte würden die ganze Aufnahme entfernen.")
+            raise UserError("Schnitte würden die ganze Aufnahme entfernen.")
         segments = []
         for i, segment in enumerate(mapping):
             selection = directory / f"keep-{i}.wav"
@@ -521,10 +532,10 @@ def local_render(tool, inputs, params, project, directory, cancelled):
                            f"pan=stereo|c0={1-max(0,pan)}*c0|c1={1+min(0,pan)}*c1,"
                            f"volume={gain}dB,adelay={delay}S:all=1[x{index}]")
         if not filters:
-            raise ValueError("Der Mix enthält keine hörbare Spur.")
+            raise UserError("Der Mix enthält keine hörbare Spur.")
         blend = "".join(f"[x{i}]" for i in range(len(filters))) + f"amix=inputs={len(filters)}:normalize=0"
         ffmpeg(*arguments, "-filter_complex", ";".join([*filters, blend]), "-c:a", "pcm_f32le", output, cancelled=cancelled)
         info = qa(output, cancelled)
     else:
-        raise ValueError("Unbekanntes Werkzeug.")
+        raise UserError("Unbekanntes Werkzeug.")
     yield output, role, {"engine": engine, **info}

@@ -10,6 +10,10 @@ Implementierungszweig `artist-workspace` im vorhandenen Arbeitsbaum. Gegenstand 
 - Brave mit echter lokaler API, Dateiauswahl, Audioanalyse, hörbarem Transportpfad, Loop-Schnitt, ZIP-Download und Reload geprüft. Desktop 1440 × 900 und mobile Breite 390 × 844 ohne horizontale Dokumentüberbreite. In Safari 26.6.2 Testprojekt geöffnet und erzeugten Take mit laufender Transportzeit abgespielt. Die native WebDriver-Freigabe blieb ausgeschaltet.
 - macOS Apple Silicon, Mac16,10 mit 16 GiB RAM. Für Musik dient ein eigens erzeugtes 12-s-Stereo-Signal mit Transienten und 123 BPM. Die synthetische Sprachprobe enthält zusätzlich deterministisches rosa Rauschen. Es wurde kein Musikmaterial aus dem Benutzerkonto hochgeladen.
 
+## Korrektur der Aufgabenanzeige
+
+Der frühere Abnahmekatalog enthält fehlgeschlagene Versuche. Bei identischem Audiomaterial erklärt der Workspace, welche Referenz benötigt wird. Historische Python-/NumPy-Diagnosen erscheinen als verständliche Aufgabenmeldungen. Brave hat die Anzeige anhand des ursprünglichen Abnahmekatalogs geprüft. Basic Pitch hat im erneuten lokalen Test eine MIDI-Datei mit 123 BPM erzeugt. Der bereits erfolgreich wieder übernommene MuScriptor-Auftrag enthält sieben MIDI-Dateien. Die aktuelle Testsuite besteht aus 22 Tests.
+
 ## Privater Modell- und DSP-Pfad
 
 | Engine | Technischer Nachweis |

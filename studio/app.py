@@ -142,10 +142,13 @@ def create_app(root=None, config_path=CONFIG_PATH, *, port=8765, dev=False, lega
     async def invalid_problem(_request, error):
         return failure(error.status, str(error), error.code)
 
+    @app.exception_handler(engines.UserError)
+    async def audio_input_error(_request, error):
+        return failure(422, str(error), "invalid")
+
     @app.exception_handler(ValueError)
-    async def invalid_value(_request, error):
-        safe = str(error).replace(str(root or data_path()), "[lokaler Speicher]")
-        return failure(422, safe[:500], "invalid")
+    async def invalid_value(_request, _error):
+        return failure(422, "Die Eingabe konnte nicht verarbeitet werden.", "invalid")
 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(_request, error):

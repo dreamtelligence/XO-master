@@ -6,7 +6,7 @@ import os
 import sys
 from pathlib import Path
 
-from audio_core.engines import local_render
+from audio_core.engines import UserError, local_render
 
 
 if __name__ == "__main__":
@@ -14,6 +14,11 @@ if __name__ == "__main__":
     spec = Path(sys.argv[1])
     request = json.loads(spec.read_text())
     inputs = [(Path(path), asset) for path, asset in request["inputs"]]
-    with contextlib.redirect_stdout(sys.stderr):
-        files = list(local_render(request["tool"], inputs, request["params"], request["project"], spec.parent, lambda: False))
-    print(json.dumps([(str(path), role, meta) for path, role, meta in files], allow_nan=False))
+    try:
+        with contextlib.redirect_stdout(sys.stderr):
+            files = list(local_render(request["tool"], inputs, request["params"], request["project"], spec.parent, lambda: False))
+    except UserError as error:
+        result = {"error": str(error)}
+    else:
+        result = [(str(path), role, meta) for path, role, meta in files]
+    print(json.dumps(result, allow_nan=False))

@@ -98,6 +98,26 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(self.client.get(audio, headers={"Range": "bytes=99999999-"}).status_code, 416)
         self.assertEqual(self.client.head(audio).headers["content-length"], str(len(self.fixture)))
 
+    def test_job_history_hides_old_worker_diagnostics(self):
+        asset = self.upload().json()
+        _, job, _ = self.job("qa", [asset["id"]])
+        self.app.state.store.update(job["id"], state="failed",
+                                    error='python: File "/Users/ozi/private.py", line 6, in render')
+        for route in (self.route, f"{self.route}/jobs/{job['id']}"):
+            response = self.client.get(route)
+            self.assertNotIn(b"/Users/ozi/", response.content)
+            self.assertNotIn(b"python:", response.content)
+            self.assertIn("Auftrag ist fehlgeschlagen", response.text)
+
+    @unittest.skipUnless(engines.capabilities()["reference"], "Matchering fehlt")
+    def test_reference_rejects_equal_audio_from_different_files(self):
+        original = self.upload().json()
+        reference = self.upload(content=self.fixture + b"JUNK\x04\x00\x00\x00test",
+                                filename="Referenz.wav", role="reference").json()
+        self.assertNotEqual(original["hash"], reference["hash"])
+        _, job, _ = self.job("reference", [original["id"], reference["id"]], state="failed")
+        self.assertEqual(job["error"], "Mix und Referenz enthalten dasselbe Audio. Wähle eine andere Referenzspur.")
+
     def test_import_cut_idempotency_cache_export_restore(self):
         response = self.upload()
         self.assertEqual(response.status_code, 201, response.text)
