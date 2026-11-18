@@ -1,9 +1,15 @@
 import { createRoot } from 'react-dom/client'
+import { AudioLines, ArrowDownToLine, ArrowRight, AudioWaveform, BookOpen, ChevronDown, Disc3, FolderOpen, Import, Layers3, LockKeyhole, Mic, Pause, Play, Plus, Repeat2, SlidersHorizontal, Sparkles, Square } from 'lucide-react'
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { api, assetUrl, audio, terminal, upload, type Asset, type Capabilities, type Draft, type Midi, type Project, type Region, type Role, type Workspace } from './api'
-import { Piano, RegionEditor, TransportTime, Wave } from './editor'
-import { Check, Inspector, Num, templates, tools } from './tools'
+import { api, assetUrl, audio, keyName, midiHasNotes, terminal, tonalKey, upload, type Asset, type Capabilities, type Draft, type EffectStep, type Midi, type Project, type Region, type Role, type Workspace } from './api'
+import { Piano, RegionEditor, TimelineRuler, TransportTime, Wave } from './editor'
+import { Dial, OutputMeter } from './controls'
+import { FxCompare, FxScope, type FxSide } from './fx'
+import { Handbook } from './manual'
+import { AnalysisResult, ResultMetrics, resultName, TempoMap } from './results'
+import studioGlass from './assets/studio-glass.jpg'
+import { Check, EffectDials, effectParameters, effectTitle, pluginModules, Inspector, Num, templates, tools } from './tools'
 import { seconds, selectionSeconds, sourcesFor, useTransport, type Source } from './transport'
 import './studio.css'
 
@@ -11,9 +17,9 @@ const client = new QueryClient({ defaultOptions: { queries: { retry: false, refe
 const roleLabels: Record<Role, string> = { original: 'Original', reference: 'Referenz', stem: 'Stem', variant: 'Variante', loop: 'Loop', oneshot: 'One-Shot', midi: 'MIDI', take: 'Take', analysis: 'Analyse', export: 'Paket' }
 const stateLabels: Record<string, string> = { queued: 'Wartet', blocked: 'Wartet auf Eingang', running: 'Läuft', finalizing: 'Prüft', completed: 'Fertig', failed: 'Fehler', partial: 'Teilweise fertig', cancelled: 'Abgebrochen', offline: 'Verbindung unterbrochen', submission_unknown: 'Start unbestätigt', output_unconfirmed: 'Ausgabe unbestätigt' }
 const contextKey = 'xo-workspace-project'
-const copyright = 'Dreamtelligence'
-
-function Brand() { return <div className="brand"><span className="brand-mark" aria-hidden="true">∿</span><span>{copyright}<small>Artist Workspace</small></span></div> }
+const templateIcons = { remix: Layers3, mix: SlidersHorizontal, speech: Mic, generate: Sparkles }
+function BrandMark() { return <span className="brand-mark" aria-hidden="true"><AudioLines size={21} /></span> }
+function Brand() { return <div className="brand"><BrandMark /><span>Dreamtelligence<small>Artist Workspace</small></span></div> }
 
 function App() {
   const [project, setProject] = useState(() => localStorage.getItem(contextKey) || '')
@@ -21,6 +27,8 @@ function App() {
   const [pending, setPending] = useState('')
   const openFile = useRef<HTMLInputElement>(null)
   const inputPackage = useRef<HTMLInputElement>(null)
+  const handbook = useRef<HTMLDialogElement>(null)
+  const openHandbook = () => handbook.current?.showModal()
   const query = useQueryClient()
   const projects = useQuery({ queryKey: ['projects'], queryFn: () => api<Project[]>('/projects') })
   const caps = useQuery({ queryKey: ['capabilities'], queryFn: () => api<Capabilities>('/capabilities') })
@@ -47,23 +55,24 @@ function App() {
     finally { setPending('') }
   }
   return <>
-    {project ? <ProjectView key={project} id={project} back={() => open('')} open={open} caps={caps.data} sharedPending={pending} />
+    {project ? <ProjectView key={project} id={project} back={() => open('')} open={open} caps={caps.data} sharedPending={pending} openHandbook={openHandbook} />
       : <main className="welcome" onDragOver={event => { event.preventDefault() }} onDrop={event => { event.preventDefault(); const files = Array.from(event.dataTransfer.files); if (files.length) void create(undefined, files) }}>
-      <header className="welcome-header"><Brand /><span className="session-mark"><span /> Privater Arbeitsbereich</span></header>
+      <header className="welcome-header"><Brand /><div className="welcome-header-actions"><span className="session-mark"><LockKeyhole size={13} aria-hidden="true" /> Privater Arbeitsbereich</span><button onClick={openHandbook}><BookOpen size={16} aria-hidden="true" /> Handbuch</button></div></header>
       <section className="welcome-main"><div className="welcome-hero">
-        <div className="welcome-copy"><h1>Dein Audio.<br />Dein Arbeitsbereich.</h1><p>Importiere Material, höre Varianten im Vergleich und bereite Spuren, Samples und MIDI für deine DAW vor.</p>
-          <div className="inline"><button className="primary import-main" disabled={!!pending} onClick={() => openFile.current?.click()}><span aria-hidden="true">↥</span> Dateien importieren</button><button disabled={!!pending} onClick={() => void create()}>Leeres Projekt</button></div>
+        <div className="welcome-copy"><h1>Artist<br />Workspace<span>.</span></h1><p>Bearbeite Spuren, höre Varianten im Vergleich und exportiere Audio und MIDI für deine DAW.</p>
+          <div className="inline"><button className="primary import-main" disabled={!!pending} onClick={() => openFile.current?.click()}><Import size={17} aria-hidden="true" /> Dateien importieren</button><button disabled={!!pending} onClick={() => void create()}><Plus size={16} aria-hidden="true" /> Leeres Projekt</button></div>
           <input hidden ref={openFile} type="file" accept="audio/*,.flac,.aiff,.wav" multiple onChange={event => { const files = Array.from(event.target.files ?? []); if (files.length) void create(undefined, files); event.target.value = '' }} />
-        </div><div className="hero-visual" aria-hidden="true">
-          <div className="visual-grid" /><div className="visual-crossline" />
-          <div className="hero-wave">{Array.from({ length: 85 }, (_, i) => <span key={i} style={{ height: `${Math.max(4, Math.abs(Math.sin(i * .69) * Math.cos(i * .105)) * 114 * Math.sin((i + 1) / 86 * Math.PI))}px` }} />)}</div>
-          <div className="hero-wave secondary">{Array.from({ length: 85 }, (_, i) => <span key={i} style={{ height: `${Math.max(4, Math.abs(Math.sin(i * .31) * Math.cos(i * .058)) * 46)}px` }} />)}</div>
-          <div className="hero-ticks"><span>00:00</span><span>00:04</span><span>00:08</span><span>00:12</span></div>
         </div>
+        <div className="hero-visual"><img src={studioGlass} alt="" width={1280} height={854} fetchPriority="high" /></div>
       </div>
-      <section className="start-templates"><h2>Mit Vorlage starten</h2><div className="template-grid">{templates.map(item =>
-        <button key={item.id} className="template" disabled={!!pending} onClick={() => void create(item.id)}><span className={`template-icon ${item.id}`} aria-hidden="true">{item.icon}</span><span><strong>{item.title}</strong><small>{item.detail}</small></span><span className="arrow" aria-hidden="true">↗</span></button>)}</div></section>
-      <section className="recent"><div className="inline section-heading"><h2>Lokale Projekte</h2><button disabled={!!pending} onClick={() => inputPackage.current?.click()}>Projektpaket öffnen</button></div>
+      <section className="start-templates"><h2>Mit Vorlage starten</h2><div className="template-grid">{templates.map(item => {
+        const Icon = templateIcons[item.id as keyof typeof templateIcons]
+        return <button key={item.id} className={`template ${item.id}`} disabled={!!pending} onClick={() => void create(item.id)}>
+          <span className="template-top"><span className="template-icon"><Icon size={21} aria-hidden="true" /></span><ArrowRight className="arrow" size={16} aria-hidden="true" /></span>
+          <span><strong>{item.title}</strong><small>{item.detail}</small></span>
+        </button>
+      })}</div></section>
+      <section className="recent"><div className="inline section-heading"><h2>Lokale Projekte</h2><button disabled={!!pending} onClick={() => inputPackage.current?.click()}><FolderOpen size={15} aria-hidden="true" /> Projektpaket öffnen</button></div>
         <input hidden ref={inputPackage} type="file" accept=".zip" onChange={async event => {
           const file = event.target.files?.[0]; event.target.value = ''
           if (!file) return
@@ -77,20 +86,21 @@ function App() {
       {caps.data?.legacy && <a href="http://localhost:8766">Geschützten Legacy-Modus öffnen</a>}
     </main>}
     {(pending || error) && <div className={`toast ${error ? 'error' : ''}`} role={error ? 'alert' : 'status'}>{error || pending}{error && <button aria-label="Fehler schließen" onClick={() => setError('')}>×</button>}</div>}
+    <Handbook dialogRef={handbook} />
   </>
 }
 
-function ProjectView({ id, back, open, caps, sharedPending }: { id: string; back: () => void; open: (id: string) => void; caps?: Capabilities; sharedPending: string }) {
+function ProjectView({ id, back, open, caps, sharedPending, openHandbook }: { id: string; back: () => void; open: (id: string) => void; caps?: Capabilities; sharedPending: string; openHandbook: () => void }) {
   const query = useQueryClient()
   const data = useQuery({ queryKey: ['workspace', id], queryFn: () => api<Workspace>(`/projects/${id}`),
     refetchInterval: q => q.state.data?.jobs.some(job => !terminal.has(job.state)) ? 1000 : false })
   if (!data.data) return <main className="welcome"><Brand /><p className={data.error ? 'notice' : 'hint'}>{data.error?.message || 'Projekt wird geladen …'}</p><button onClick={back}>Zu den Projekten</button></main>
-  return <WorkspaceView current={data.data} id={id} back={back} open={open} caps={caps} sharedPending={sharedPending} refresh={() => query.invalidateQueries({ queryKey: ['workspace', id] })} />
+  return <WorkspaceView current={data.data} id={id} back={back} open={open} caps={caps} sharedPending={sharedPending} openHandbook={openHandbook} refresh={() => query.invalidateQueries({ queryKey: ['workspace', id] })} />
 }
 
 type Editable = Pick<Project, 'name' | 'rate' | 'meter' | 'purpose' | 'bpm'> & { draft: Draft; archived: boolean }
 
-function WorkspaceView({ current, id, back, open, caps, sharedPending, refresh }: { current: Workspace; id: string; back: () => void; open: (id: string) => void; caps?: Capabilities; sharedPending: string; refresh: () => Promise<void> }) {
+function WorkspaceView({ current, id, back, open, caps, sharedPending, refresh, openHandbook }: { current: Workspace; id: string; back: () => void; open: (id: string) => void; caps?: Capabilities; sharedPending: string; refresh: () => Promise<void>; openHandbook: () => void }) {
   const query = useQueryClient()
   const editable = (project: Project): Editable => ({ name: project.name, rate: project.rate, meter: project.meter, purpose: project.purpose, bpm: project.bpm, draft: project.draft, archived: !!project.archived })
   const [edit, setEdit] = useState(() => editable(current.project))
@@ -104,7 +114,7 @@ function WorkspaceView({ current, id, back, open, caps, sharedPending, refresh }
   const [active, setActive] = useState('')
   const [selection, setSelection] = useState<string[]>([])
   const [cart, setCart] = useState<string[]>([])
-  const [pane, setPane] = useState<'library' | 'inspector' | ''>('library')
+  const [pane, setPane] = useState<'library' | 'inspector' | ''>(() => window.innerWidth >= 900 ? 'library' : '')
   const [hideLibrary, setHideLibrary] = useState(false)
   const [hideInspector, setHideInspector] = useState(false)
   const [libraryWidth, setLibraryWidth] = useState(260)
@@ -120,7 +130,16 @@ function WorkspaceView({ current, id, back, open, caps, sharedPending, refresh }
   const [loop, setLoop] = useState(false)
   const [matched, setMatched] = useState(false)
   const [side, setSide] = useState<'base' | 'new'>('new')
+  const [fxPlayback, setFxPlayback] = useState<{ id: string; side: FxSide } | null>(null)
+  const [liveSide, setLiveSide] = useState<FxSide>('wet')
+  const [rackExpanded, setRackExpanded] = useState(false)
+  const [rackIndex, setRackIndex] = useState(0)
+  const [audition, setAudition] = useState<{ id: string; start: number }>()
+  const liveClip = useRef('')
+  const rackPanel = useRef<HTMLElement>(null)
+  const [fxMatched, setFxMatched] = useState(true)
   const [zoom, setZoom] = useState(1)
+  const [bars, setBars] = useState(false)
   const [format, setFormat] = useState('pcm24')
   const [align, setAlign] = useState(true)
   const [strict, setStrict] = useState(false)
@@ -134,7 +153,9 @@ function WorkspaceView({ current, id, back, open, caps, sharedPending, refresh }
   const monitorTracks = useRef<Asset[]>([])
   const all = current.assets.filter(asset => !asset.hidden)
   const assets = all.filter(asset => asset.role !== 'export')
-  const asset = assets.find(item => item.id === active) ?? assets.find(audio) ?? assets[0]
+  const asset = assets.find(item => item.id === active) ?? (edit.draft.tool === 'effects'
+    ? assets.find(item => audio(item) && !(item.meta.preview_render && item.meta.operation?.tool === 'effects')) : undefined)
+    ?? assets.find(audio) ?? assets[0]
   const selected = selection.map(key => assets.find(item => item.id === key)).filter((x): x is Asset => !!x)
   const viewedTracks = selected.filter(audio).length ? selected.filter(audio) : audio(asset)
     ? asset.meta.group ? assets.filter(item => item.meta.group === asset.meta.group && audio(item)) : [asset] : []
@@ -152,9 +173,45 @@ function WorkspaceView({ current, id, back, open, caps, sharedPending, refresh }
   const tool = edit.draft.tool || defaultTool || (asset?.role === 'midi' ? 'midi' : 'qa')
   const settings = singleSettings(tool)
   const region = audio(asset) ? edit.draft.regions?.[asset.id] ?? { start: 0, end: asset.meta.samples! } : undefined
+  const fxSource = tool === 'effects' && audio(asset) ? asset : undefined
+  const liveId = fxSource && region ? `${fxSource.id}:${region.start}:${region.end}` : ''
+  const auditionStart = audition?.id === liveId ? audition.start : region?.start
+  const fxParams = fxSource && region && auditionStart !== undefined ? { ...effectParameters(settings), preview: true,
+    start: auditionStart, end: Math.min(region.end, auditionStart + fxSource.meta.rate * 30),
+  } : undefined
+  const fxWindow = fxSource && fxParams ? selectionSeconds(fxSource, fxParams) : undefined
+  const rackAt = Math.min(rackIndex, (fxParams?.chain.length ?? 0) - 1)
+  const rackStep = fxParams?.chain[rackAt]
+  const readyForLive = Boolean(caps?.live_effects && fxWindow && fxParams?.chain.length && fxParams.chain.every(step =>
+    step.bypass || !Object.hasOwn(pluginModules, step.effect) || !!caps.effect_plugins?.[step.effect]))
+  const liveStatus = player.liveActive ? (player.loading ? 'Live-Vorschau puffert …' : 'Echtzeit aktiv') : readyForLive ? 'Live-Vorschau bereit' : 'Live-Vorschau nicht verfügbar'
+  const fxJobs = fxSource ? current.jobs.filter(job => job.tool === 'effects' && job.inputs[0] === fxSource.id && job.params.preview === true) : []
+  const fxCurrent = fxParams && fxJobs.find(({ params }) => {
+    const sameLength = params.start === fxParams.start && params.end === fxParams.end && (params.tail ?? 0) === fxParams.tail
+    const previous = params.chain
+    return sameLength && Array.isArray(previous) && previous.length === fxParams.chain.length && fxParams.chain.every((step, index) =>
+      previous[index] && typeof previous[index] === 'object' && Object.keys(step).length === Object.keys(previous[index]).length &&
+      Object.entries(step).every(([key, value]) => previous[index][key] === value))
+  })
+  const fxWet = fxCurrent?.state === 'completed' ? assets.find(item => item.job === fxCurrent.id && audio(item)) : undefined
+  const fxBusy = fxCurrent && !terminal.has(fxCurrent.state)
+  const fxId = fxSource && fxParams ? `${fxSource.id}:${fxParams.start}:${fxParams.end}:${fxWet?.id ?? ''}` : ''
+  const fxSide = fxPlayback?.id === fxId ? fxPlayback.side : null
+  const fxStart = fxWindow && fxSource ? fxWindow[0] + (tracks[fxSource.id]?.offset ?? fxSource.meta.project_offset ?? 0) / edit.rate : 0
+  const fxDuration = fxWindow ? fxWindow[1] - fxWindow[0] : 0
+  const waveClock = useMemo(() => fxSide ? {
+    subscribe: player.position.subscribe,
+    current: () => fxStart + Math.min(fxDuration, player.position.current()),
+  } : player.position, [fxSide, fxStart, fxDuration, player.position])
   const regionGroup = asset ? `regions:${asset.id}:${tool === 'cut' ? 'cuts' : 'slices'}` : ''
   const slices = (asset && singleSettings(regionGroup).slices as Region[] | undefined) || []
   const analysis = audio(asset) ? assets.find(item => item.role === 'analysis' && item.parents.includes(asset.id) && typeof item.meta.report?.bpm === 'number') : undefined
+  const keyReport = audio(asset) ? assets.find(item => item.role === 'analysis' && item.parents.includes(asset.id) && item.meta.report?.origin === 'librosa' && 'key' in item.meta.report) : undefined
+  const keyGroup = `tonart:${asset?.id}`
+  const sourceKey = tonalKey(singleSettings(keyGroup).source)
+  const estimatedKey = tonalKey(keyReport ? keyReport.meta.report?.key : asset?.meta.key)
+  const displayKey = sourceKey ?? estimatedKey
+  const keyBusy = current.jobs.some(job => job.tool === 'detect' && job.inputs[0] === asset?.id && !terminal.has(job.state))
   const suggestions = audio(asset) ? assets.find(item => item.role === 'analysis' && item.parents.includes(asset.id) && Array.isArray(item.meta.report?.regions)) : undefined
   const cloudSpeech = audio(asset) ? assets.find(item => item.role === 'analysis' && item.parents.includes(asset.id) && Array.isArray(item.meta.report?.suggestions)) : undefined
   const speechProposals = (cloudSpeech?.meta.report?.suggestions as {start: number; end: number; kind: string; text?: string}[] | undefined)?.map(item => ({
@@ -167,7 +224,12 @@ function WorkspaceView({ current, id, back, open, caps, sharedPending, refresh }
   })).filter(item => item.end > item.start) ?? []
   const detected = tool === 'cut' ? (speechProposals.length ? speechProposals : detectCuts) : (suggestions?.meta.report?.regions as Region[] | undefined) ?? []
   const isNew = current.jobs.some(job => !terminal.has(job.state))
-  const filtered = assets.filter(item => (filter === 'all' || item.role === filter) && item.name.toLowerCase().includes(search.toLowerCase()))
+  const librarySearch = search.trim().toLowerCase()
+  const filtered = assets.filter(item => (filter === 'all' || item.role === filter) &&
+    (item.name.toLowerCase().includes(librarySearch) || resultName(item).toLowerCase().includes(librarySearch)))
+  const midiView = asset?.role === 'midi' ? singleSettings(`midi:${asset.id}`).view as Midi | undefined : undefined
+  const hasMidiNotes = midiHasNotes(midiView ?? asset?.meta.midi)
+  const canPlay = audio(asset) || hasMidiNotes
   const project: Project = { ...current.project, ...edit, archived: Number(edit.archived) }
   const parentJob = current.jobs.find(job => job.id === asset?.job)
   const stalePreview = asset?.meta.preview_render && asset.meta.operation?.tool === tool &&
@@ -223,10 +285,22 @@ function WorkspaceView({ current, id, back, open, caps, sharedPending, refresh }
     else dialog.current?.close()
   }, [exportMenu])
 
+  useEffect(() => {
+    if (fxPlayback && fxPlayback.id !== fxId) { player.pause(); player.seek(0); setFxPlayback(null) }
+  }, [fxPlayback, fxId])
+
+  useEffect(() => {
+    if (player.liveActive && (liveId !== liveClip.current || !readyForLive)) player.pause()
+  }, [player.liveActive, liveId, readyForLive])
+
+  useEffect(() => {
+    if (fxParams?.chain.length) player.updateLive(fxParams.chain, loop)
+  }, [fxParams?.chain, loop, player.liveActive])
+
   function pick(item: Asset) {
-    if (asset?.id !== item.id) { player.pause(); player.seek(0); setSide('new') }
+    if (asset?.id !== item.id) { player.pause(); player.seek(0); setSide('new'); setFxPlayback(null) }
     setActive(item.id)
-    if (item.role === 'midi') draft({ tool: 'midi' })
+    if (item.role === 'midi' && midiHasNotes(item.meta.midi) && tool !== 'midi') draft({ tool: 'midi' })
   }
   function choose(tool: string) {
     draft({ tool })
@@ -237,6 +311,7 @@ function WorkspaceView({ current, id, back, open, caps, sharedPending, refresh }
 
   async function submit(tool: string, inputs: string[], params: Record<string, unknown>, count = 1) {
     if (submitting.current) return
+    if (tool === 'effects' && params.preview && asset && asset.id === inputs[0]) setActive(asset.id)
     submitting.current = true
     setRunning(true)
     try {
@@ -276,8 +351,12 @@ function WorkspaceView({ current, id, back, open, caps, sharedPending, refresh }
     catch (problem) { setError((problem as Error).message) }
   }
   function listen(specific?: Region, at?: number, which = side, loopEnabled = loop) {
+    setFxPlayback(null)
     monitorTracks.current = []
-    if (asset?.role === 'midi') { void player.playMidi({ ...asset, meta: { ...asset.meta, midi: (singleSettings(`midi:${asset.id}`).view as Midi | undefined) ?? asset.meta.midi } }, at ?? player.cursor.current); return }
+    if (asset?.role === 'midi') {
+      if (hasMidiNotes) void player.playMidi({ ...asset, meta: { ...asset.meta, midi: midiView ?? asset.meta.midi } }, at ?? player.cursor.current)
+      return
+    }
     if (!audio(asset)) return
     const item = asset
     const dry = specific || (source && which === 'base') ? [item] : viewedTracks
@@ -293,7 +372,9 @@ function WorkspaceView({ current, id, back, open, caps, sharedPending, refresh }
       const stretch = item.meta.ratio || 1
       const sections = item.meta.edit_map?.map(part => ({
         start: part.result_start / resultRate, end: part.result_start / resultRate + (part.source_end - part.source_start) / inputRate, offset: part.source_start / inputRate,
-      }))
+      })) ?? (item.meta.source_end !== undefined && item.meta.source_start !== undefined && item.meta.operation?.tool === 'effects'
+        ? [{ start: 0, end: (item.meta.source_end - item.meta.source_start) / inputRate, offset: item.meta.source_start / inputRate }]
+        : undefined)
       playing = [{ asset: source, gain: 1, ratio: 1 / stretch, sourceOffset: (item.meta.source_start ?? 0) / inputRate, regions: sections }]
     }
     if (matched && source && playing.length) {
@@ -306,7 +387,63 @@ function WorkspaceView({ current, id, back, open, caps, sharedPending, refresh }
     }
     if (target < to && playing.length) void player.play(playing as Source[], target, to, loopEnabled ? [from, to] : undefined)
   }
-  function seek(target: number) { player.seek(target); if (player.playing) listen(undefined, target) }
+  function listenFx(next: FxSide, at = 0, repeat = loop, match = fxMatched) {
+    if (!fxSource || !fxWindow || (next === 'wet' && !fxWet)) return
+    const [from, to] = fxWindow
+    const end = fxWet?.meta.seconds ?? to - from
+    const levels = fxWet?.meta.comparison_lufs
+    const gain = match && levels ? 10 ** (Math.max(-20, Math.min(...levels) - levels[next === 'dry' ? 0 : 1]) / 20) : 1
+    const entry: Source = next === 'wet' && fxWet ? { asset: fxWet, gain } : { asset: fxSource, gain, regions: [{ start: 0, end: to - from, offset: from }] }
+    const start = at < end - .001 ? at : 0
+    monitorTracks.current = []
+    setFxPlayback({ id: fxId, side: next })
+    void player.play([entry], start, end, repeat ? [0, end] : undefined)
+  }
+  function startLive(at = player.cursor.current, listenSide = liveSide) {
+    if (!readyForLive || !fxSource || !fxWindow || !fxParams || !region) return
+    const [selectionStart, selectionEnd] = selectionSeconds(fxSource, region)
+    const inSelection = at >= selectionStart && at < selectionEnd - .001
+    const position = inSelection ? at : selectionStart
+    const start = position >= fxWindow[0] && position < fxWindow[1] - .001 ? fxParams.start : Math.round(position * fxSource.meta.rate)
+    const [from, to] = selectionSeconds(fxSource, { start, end: Math.min(region.end, start + fxSource.meta.rate * 30) })
+    setAudition({ id: liveId, start })
+    setError('')
+    setFxPlayback(null)
+    monitorTracks.current = []
+    liveClip.current = liveId
+    setLiveSide(listenSide)
+    void player.playLive(fxSource, from, to, Math.max(from, position), fxParams.chain, loop, listenSide)
+  }
+  function liveAB(next: FxSide) {
+    setLiveSide(next)
+    player.selectLive(next)
+  }
+  function expandRack() {
+    setRackExpanded(!rackExpanded)
+    if (!rackExpanded) {
+      setPane('')
+      requestAnimationFrame(() => {
+        rackPanel.current?.focus({ preventScroll: true })
+        rackPanel.current?.scrollIntoView({ block: 'nearest' })
+      })
+    }
+  }
+  function changeRackStep(step: EffectStep) {
+    if (fxParams) config('chain', fxParams.chain.map((entry, index) => index === rackAt ? step : entry))
+  }
+  const saveFxSelection = !running && !fxBusy && !edit.archived && fxSource && fxParams?.chain.length && caps?.tools.effects === 'ready'
+    ? () => void submit('effects', [fxSource.id], fxParams) : undefined
+  function togglePlayback() {
+    if (player.playing) player.pause()
+    else if (fxSide) listenFx(fxSide, player.cursor.current)
+    else if (readyForLive) startLive()
+    else listen()
+  }
+  function seek(target: number) {
+    setFxPlayback(null); player.seek(target)
+    if (player.liveActive) startLive(target)
+    else if (player.playing) listen(undefined, target)
+  }
   useEffect(() => { if (monitorTracks.current.length) player.setLevels(sourcesFor(monitorTracks.current, tracks, edit.rate)) }, [tracks, edit.rate])
   function alternate(which: 'base' | 'new') { setSide(which); if (player.playing) listen(undefined, player.cursor.current, which) }
 
@@ -314,15 +451,14 @@ function WorkspaceView({ current, id, back, open, caps, sharedPending, refresh }
     function key(event: KeyboardEvent) {
       const target = event.target as HTMLElement | null
       if (target?.closest('input, textarea, select, button, [contenteditable], a, dialog')) return
-      if (event.code === 'Space' && !event.repeat) { event.preventDefault(); if (player.playing) player.pause(); else listen() }
+      if (event.code === 'Space' && !event.repeat) { event.preventDefault(); togglePlayback() }
       if (event.key === 'Escape') { setProjectMenu(false); setPane(''); setExportMenu(false) }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') { event.preventDefault(); undo(event.shiftKey) }
     }
     window.addEventListener('keydown', key)
     return () => window.removeEventListener('keydown', key)
   })
-  const measured = asset?.meta.report ?? asset?.meta ?? {}
-  const pairReady = !!source && [source, asset].every(item => !!item && (typeof item.meta.lufs === 'number' || assets.some(analysis => analysis.role === 'analysis' && analysis.parents.includes(item.id) && typeof analysis.meta.report?.lufs === 'number')))
+  const pairReady = !!source && audio(asset) && [source, asset].every(item => typeof item.meta.lufs === 'number' || assets.some(analysis => analysis.role === 'analysis' && analysis.parents.includes(item.id) && typeof analysis.meta.report?.lufs === 'number'))
   const navigation = () => {
     if (saving.current || saveState === 'Speichert …') { setError('Das Projekt speichert gerade.'); return }
     void query.invalidateQueries({ queryKey: ['projects'] }); back()
@@ -366,10 +502,10 @@ function WorkspaceView({ current, id, back, open, caps, sharedPending, refresh }
   }
   return <main className="workspace" style={{ '--library': `${libraryWidth}px`, '--inspector': `${inspectorWidth}px` } as React.CSSProperties}>
     <header className="project-bar">
-      <div className="project-identity"><button className="brand-home" onClick={navigation} aria-label="Zur Projektübersicht"><span className="brand-mark" aria-hidden="true">∿</span></button>
-        <div><button className="project-name" aria-expanded={projectMenu} onClick={() => setProjectMenu(!projectMenu)}>{project.name} <span aria-hidden="true">⌄</span></button><small className="save-label">{edit.archived ? 'Archiviert' : saveState}</small></div></div>
-      <div className="project-metrics"><b>{edit.bpm} <small>BPM</small></b><span>{edit.meter}</span><span>{edit.rate / 1000} kHz</span></div>
-      <div className="project-actions"><button disabled={!!pending || !!sharedPending || edit.archived} onClick={() => { role.current = 'original'; file.current?.click() }}>↥ <span>Importieren</span></button><button className="primary" onClick={() => setExportMenu(true)}>Exportkorb <span className="counter">{cart.length}</span></button></div>
+      <div className="project-identity"><button className="brand-home" onClick={navigation} aria-label="Zur Projektübersicht"><BrandMark /></button>
+        <div className="project-caption"><button className="project-name" aria-expanded={projectMenu} onClick={() => setProjectMenu(!projectMenu)} title={project.name}><span>{project.name}</span><ChevronDown size={15} aria-hidden="true" /></button><small className="save-label">{edit.archived ? 'Archiviert' : saveState}</small></div></div>
+      <div className="project-metrics" aria-label="Projektparameter"><b title={edit.draft.tempo_origin === 'detected' ? 'Aus Audioanalyse übernommen' : edit.draft.tempo_origin === 'manual' ? 'Manuelles Projekttempo' : 'Projektvorgabe'}>{edit.bpm} <small>BPM</small></b><span>{edit.meter}</span><span>{edit.rate / 1000} kHz</span></div>
+      <div className="project-actions"><button className="studio-manual" onClick={openHandbook} aria-label="Handbuch" title="Handbuch"><BookOpen size={16} aria-hidden="true" /><span>Handbuch</span></button><button disabled={!!pending || !!sharedPending || edit.archived} onClick={() => { role.current = 'original'; file.current?.click() }}><Import size={16} aria-hidden="true" /><span>Importieren</span></button><button className="primary" onClick={() => setExportMenu(true)}><ArrowDownToLine size={16} aria-hidden="true" /> Exportkorb <span className="counter">{cart.length}</span></button></div>
       <input hidden type="file" accept="audio/*,.flac,.aiff,.wav" multiple ref={file} onChange={event => { const files = Array.from(event.target.files ?? []); event.target.value = ''; void importFiles(files) }} />
     </header>
     {projectMenu && <section className="project-menu" aria-label="Projekteinstellungen">
@@ -387,16 +523,16 @@ function WorkspaceView({ current, id, back, open, caps, sharedPending, refresh }
       <div className="inline"><button onClick={async () => { try { const copy = await api<Project>(route + '/duplicate', 'POST'); open(copy.id) } catch (problem) { setError((problem as Error).message) } }}>Duplizieren</button>
         <button onClick={() => update({ ...edit, archived: !edit.archived })}>{edit.archived ? 'Aktivieren' : 'Archivieren'}</button><button onClick={() => setProjectMenu(false)}>Schließen</button></div>
     </section>}
-    <div className="compact-actions"><button aria-pressed={pane === 'library'} onClick={() => setPane(pane === 'library' ? '' : 'library')}>Bibliothek</button><button aria-pressed={pane === 'inspector'} onClick={() => setPane(pane === 'inspector' ? '' : 'inspector')}>Werkzeuge</button></div>
+    <div className="compact-actions"><button aria-pressed={pane === 'library'} onClick={() => setPane(pane === 'library' ? '' : 'library')}><Layers3 size={16} aria-hidden="true" /> Bibliothek</button><button aria-pressed={pane === 'inspector'} onClick={() => setPane(pane === 'inspector' ? '' : 'inspector')}><SlidersHorizontal size={16} aria-hidden="true" /> Werkzeuge</button></div>
     <div className={`work-columns ${hideLibrary ? 'library-hidden' : ''} ${hideInspector ? 'inspector-hidden' : ''}`}>
       <aside className={`library panel ${pane === 'library' ? 'panel-shown' : ''}`}>
         <div className="panel-heading"><h2>Bibliothek</h2><button className="plain desktop-only" aria-label="Bibliothek einklappen" onClick={() => setHideLibrary(true)}>‹</button><button className="plain compact-only" aria-label="Bibliothek schließen" onClick={() => setPane('')}>×</button></div>
         <div className="library-filters"><input type="search" value={search} onChange={event => setSearch(event.target.value)} placeholder="Dateien suchen" aria-label="Dateien suchen" />
           <select aria-label="Asset-Typ filtern" value={filter} onChange={event => setFilter(event.target.value as Role | 'all')}><option value="all">Alle Materialien</option>{Object.entries(roleLabels).filter(([key]) => key !== 'export').map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></div>
         <div className="asset-list">
-          {filtered.length ? filtered.map(item => <div className={`asset-row ${asset?.id === item.id ? 'active' : ''}`} key={item.id}>
+          {filtered.length ? filtered.map(item => <div className={`asset-row ${asset?.id === item.id ? 'active' : ''}`} data-role={item.role} key={item.id}>
             <input type="checkbox" aria-label={`${item.name} zur Mehrfachauswahl`} checked={selection.includes(item.id)} onChange={() => setSelection(toggle(selection, item.id))} />
-            <button className="asset-name" aria-current={asset?.id === item.id ? 'true' : undefined} onClick={() => { pick(item); if (window.innerWidth < 900) setPane('') }}><span className={`asset-icon ${item.role}`} aria-hidden="true">{item.role === 'midi' ? '♬' : item.role === 'analysis' ? '≋' : '∿'}</span><span><strong>{item.name}</strong><small>{roleLabels[item.role]}{item.meta.seconds ? ` · ${seconds(item.meta.seconds).slice(0, 5)}` : ''}</small></span></button>
+            <button className="asset-name" title={item.name} aria-current={asset?.id === item.id ? 'true' : undefined} onClick={() => { pick(item); if (window.innerWidth < 900) setPane('') }}><span className="asset-icon" aria-hidden="true">{item.role === 'midi' ? <Disc3 size={16} /> : <AudioWaveform size={16} />}</span><span><strong>{resultName(item)}</strong><small>{roleLabels[item.role]}{item.meta.seconds ? ` · ${seconds(item.meta.seconds).slice(0, 5)}` : ''}</small></span></button>
           </div>) : <p className="hint">{assets.length ? 'Keine passenden Dateien.' : 'Importierte Dateien und Render erscheinen hier.'}</p>}
         </div>
         <div className="library-foot"><button disabled={!!pending || edit.archived} onClick={() => { role.current = 'reference'; file.current?.click() }}>+ Referenz importieren</button>
@@ -425,8 +561,12 @@ function WorkspaceView({ current, id, back, open, caps, sharedPending, refresh }
             <button className="primary" disabled={running || edit.archived || recipe.length < 2} onClick={() => void runRecipe()}>Folge rendern</button></div>
           {recipe.some(step => ['separation','mastering','enhancement','transcription','generation','audiosr'].includes(step.tool)) && <p className="hint">Diese Folge enthält private Modal-Aufträge.</p>}
         </details>
-        {!asset ? <div className="empty-stage"><div aria-hidden="true" className="empty-pulse">∿</div><h3>Material ins Projekt holen</h3><p>Ziehe Audiodateien hierher oder importiere sie direkt.</p><button className="primary" disabled={edit.archived || !!pending} onClick={() => { role.current = 'original'; file.current?.click() }}>Dateien importieren</button>{defaultTool === 'generation' && <button onClick={() => choose('generation')}>Text zu Audio öffnen</button>}</div>
-          : <><div className="asset-top"><div className="asset-title"><span className="mode">{roleLabels[asset.role]}</span><h3>{asset.name}</h3><small>{asset.meta.rate ? `${asset.meta.channels === 1 ? 'Mono' : 'Stereo'} · ${asset.meta.rate / 1000} kHz · ${seconds(asset.meta.seconds!)}` : asset.meta.engine || asset.suffix}</small></div>
+        {!asset ? <div className="empty-stage"><div aria-hidden="true" className="empty-pulse"><AudioWaveform size={33} /></div><h3>Material ins Projekt holen</h3><p>Ziehe Audiodateien hierher oder importiere sie direkt.</p><button className="primary" disabled={edit.archived || !!pending} onClick={() => { role.current = 'original'; file.current?.click() }}>Dateien importieren</button>{defaultTool === 'generation' && <button onClick={() => choose('generation')}>Text zu Audio öffnen</button>}</div>
+          : <><div className="asset-top"><div className="asset-title" data-role={asset.role}><div className="inline asset-tags"><span className="mode clip-tag">{roleLabels[asset.role]}</span>
+            {audio(asset) && (displayKey || keyReport ? <button className="key-status" onClick={() => choose('stretch')} title={sourceKey ? 'Quelltonart manuell gesetzt' : estimatedKey ? 'Abgeleitete Quelltonart' : 'Tonart manuell wählen'}>
+              {displayKey ? keyName(displayKey) : 'Tonart unklar'} <SlidersHorizontal size={13} aria-hidden="true" />
+            </button> : <button className="key-status" disabled={running || keyBusy || !!edit.archived || caps?.tools.detect !== 'ready'} onClick={() => void submit('detect', [asset.id], { mode: 'key' })}>{keyBusy ? 'Tonart wird analysiert …' : 'Tonart erkennen'}</button>)}
+          </div><h3 title={asset.name}>{resultName(asset)}</h3><small>{asset.meta.rate ? `${asset.meta.channels === 1 ? 'Mono' : 'Stereo'} · ${asset.meta.rate / 1000} kHz · ${seconds(asset.meta.seconds!)}` : asset.meta.engine || asset.suffix}</small></div>
             <div className="inline"><button aria-pressed={cart.includes(asset.id)} onClick={() => setCart(toggle(cart, asset.id))}>{cart.includes(asset.id) ? 'Im Exportkorb' : '+ Exportkorb'}</button>
               <details className="asset-menu"><summary>Asset-Aktionen</summary><form onSubmit={event => { event.preventDefault(); const value = new FormData(event.currentTarget).get('name'); void mutateAsset(asset, { name: value }) }}>
                 <label className="field"><span>Asset-Name</span><input key={asset.id} name="name" defaultValue={asset.name} maxLength={140} required /></label><button>Umbenennen</button></form>
@@ -437,17 +577,40 @@ function WorkspaceView({ current, id, back, open, caps, sharedPending, refresh }
                 {asset.parents.length > 0 && <p className="hint">{current.assets.filter(item => item.parents.includes(asset.id)).length} direkte Weiterverwendungen · Quelle {source?.name || 'in Herkunft sichtbar'}</p>}
               </details></div>
           </div>
-          {audio(asset) && region && <><div className="timeline-controls inline">
-              <span>{viewedTracks.length} {viewedTracks.length === 1 ? 'Spur' : 'Spuren'}</span><label>Zoom <select value={zoom} onChange={event => setZoom(Number(event.target.value))}><option value="1">100 %</option><option value="2">200 %</option><option value="4">400 %</option><option value="8">800 %</option></select></label>
+          {audio(asset) && region && <><div className="signal-frame"><div className="timeline-controls inline">
+              <span className="signal-title"><AudioLines size={16} aria-hidden="true" />{viewedTracks.length} {viewedTracks.length === 1 ? 'Spur' : 'Spuren'}</span><div className="inline timeline-options"><label>Lineal <select value={bars ? 'bars' : 'time'} onChange={event => setBars(event.target.value === 'bars')}><option value="time">Zeit</option><option value="bars">Takte</option></select></label><label>Zoom <select value={zoom} onChange={event => setZoom(Number(event.target.value))}><option value="1">100 %</option><option value="2">200 %</option><option value="4">400 %</option><option value="8">800 %</option></select></label></div>
               {selected.length > 0 && <button onClick={() => { setCart([...new Set([...cart, ...selected.map(item => item.id)])]); setSelection([]) }}>Auswahl in Exportkorb</button>}
             </div><div className="wave-scroll"><div className="wave-grid" style={{ width: `${zoom * 100}%` }}>
-              <div className="timeline-label"><span />{Array.from({ length: 5 }, (_, index) => <span key={index}>{seconds(duration * index / 4).slice(0, duration < 10 ? 8 : 5)}</span>)}</div>
-              {viewedTracks.map(item => <div className="lane" key={item.id}><div className="lane-label"><button className="plain" title={item.name} onClick={() => pick(item)}>{item.name}</button><div>
+              <TimelineRuler duration={duration} zoom={zoom} bars={bars} barLength={beat * meterN} downbeat={mark} />
+              {viewedTracks.map(item => <div className={`lane ${item.id === asset.id ? 'lane-active' : ''}`} data-role={item.role} key={item.id}><div className="lane-label"><button className="plain" title={item.name} onClick={() => pick(item)}>{item.name}</button><small>{roleLabels[item.role]}</small><div>
                 {(['solo', 'mute'] as const).map(key => <button className="plain" key={key} aria-label={`${item.name} ${key}`} aria-pressed={trackSettings(item)[key]} onClick={() => draft({ tracks: { ...tracks, [item.id]: { ...trackSettings(item), [key]: !trackSettings(item)[key] } } })}>{key === 'solo' ? 'S' : 'M'}</button>)}</div></div>
-                <Wave asset={item} length={duration} position={player.position} offset={trackSettings(item).offset / edit.rate}
+                <Wave asset={item} length={duration} position={waveClock} offset={trackSettings(item).offset / edit.rate}
                   region={item.id === asset.id ? region : undefined} markers={item.id === asset.id ? slices : undefined}
-                  beats={beatLines} onRegion={item.id === asset.id ? setRegion : undefined} onSeek={seek} /></div>)}
-            </div></div>
+                  beats={beatLines} beatsPerBar={meterN} onRegion={item.id === asset.id ? setRegion : undefined} onSeek={seek} /></div>)}
+            </div></div></div>
+            {fxSource && fxParams && fxWindow && <>
+              {caps?.live_effects && <section ref={rackPanel} tabIndex={-1} className="fx-compare rack-preview-panel" aria-label="Live-Effektvorschau">
+                <header className="fx-compare-header"><div className="fx-compare-title"><AudioWaveform size={19} aria-hidden="true" /><div>
+                  <h3>{rackExpanded && rackStep ? effectTitle(rackStep.effect) : 'Live-Effektvorschau'}</h3>
+                  <p>{seconds(fxWindow[0])}–{seconds(fxWindow[1])}</p>
+                </div></div>
+                  <div className="inline"><button className="primary" disabled={!readyForLive} onClick={() => player.liveActive ? player.pause() : startLive()}>{player.liveActive ? 'Live pausieren' : 'Live hören'}</button>
+                    <button type="button" aria-expanded={rackExpanded} onClick={expandRack}>{rackExpanded ? 'Display verkleinern' : 'Display vergrößern'}</button>
+                  </div></header>
+                {rackExpanded && <><FxScope large running={player.liveActive && !player.loading} read={player.readLive} />
+                  {rackStep && <div className="rack-large-dials fx-module" data-effect={rackStep.effect}><EffectDials key={rackAt + rackStep.effect} step={rackStep} change={changeRackStep} /></div>}</>}
+                <div className="rack-live-footer"><div className="ab" role="group" aria-label="Live-Hörvergleich">
+                  <button disabled={!readyForLive} aria-pressed={liveSide === 'dry'} onClick={() => liveAB('dry')}>A · Quelle</button>
+                  <button disabled={!readyForLive} aria-pressed={liveSide === 'wet'} onClick={() => liveAB('wet')}>B · Effekt</button>
+                </div><small role="status">{liveStatus}</small></div>
+              </section>}
+              <details className="fx-saved" open={!caps?.live_effects || undefined}><summary>Gerenderte Vorschau und WAV speichern</summary>
+              <FxCompare source={fxSource} wet={fxWet} window={fxWindow} clock={player.position} side={fxSide} playing={player.playing}
+              state={fxBusy ? 'Rendert …' : fxCurrent?.state === 'failed' ? 'Render fehlgeschlagen' : fxJobs.length && !fxCurrent ? 'Auswahl oder Effekt geändert' : 'Vorschau fehlt'}
+              render={saveFxSelection}
+              listen={next => { if (next === fxSide && player.playing) player.pause(); else listenFx(next, fxSide ? player.cursor.current : 0) }}
+              matched={fxMatched} setMatched={value => { setFxMatched(value); if (fxSide && player.playing) listenFx(fxSide, player.cursor.current, loop, value) }}
+              inCart={!!fxWet && cart.includes(fxWet.id)} exportWet={() => fxWet && setCart(toggle(cart, fxWet.id))} /></details></>}
             <RegionEditor key={asset.id} project={project} asset={asset} region={region} set={setRegion} slices={slices}
               setSlices={value => config('slices', value, regionGroup)} addLabel={tool === 'cut' ? 'Schnitt' : 'Treffer'} detected={detected}
               onPlay={value => listen(value, selectionSeconds(asset, value)[0])} />
@@ -455,19 +618,28 @@ function WorkspaceView({ current, id, back, open, caps, sharedPending, refresh }
               <Num label="BPM" value={bpm} min={30} max={300} step={.01} onChange={bpm => update({ ...edit, bpm, draft: { ...edit.draft, tempo_origin: 'manual' } })} />
               <Num label="Erster Downbeat · s" value={mark} min={0} max={duration} step={.001} onChange={downbeat => draft({ downbeat, tempo_origin: 'manual' })} />
             </div><div className="inline"><button disabled={bpm < 60} onClick={() => update({ ...edit, bpm: bpm / 2, draft: { ...edit.draft, tempo_origin: 'manual' } })}>Halbieren</button><button disabled={bpm > 150} onClick={() => update({ ...edit, bpm: bpm * 2, draft: { ...edit.draft, tempo_origin: 'manual' } })}>Verdoppeln</button>{analysis && <button onClick={() => update({ ...edit, bpm: Number(analysis.meta.report!.bpm), draft: { ...edit.draft, tempo_origin: 'detected' } })}>Erkanntes Tempo übernehmen</button>}</div><p className="hint">{meterN} Zählzeiten pro Takt · {edit.draft.tempo_origin === 'detected' ? 'Erkannt' : edit.draft.tempo_origin === 'manual' ? 'Manuell' : 'Projektvorgabe'}</p></details></>}
-          {asset.role === 'midi' && <Piano key={asset.id} asset={asset} view={singleSettings(`midi:${asset.id}`).view as Midi | undefined}
-            change={view => config('view', view, `midi:${asset.id}`)} edit={() => choose('midi')} />}
-          {(asset.role === 'analysis' || typeof measured.lufs === 'number') && <div className="measure">
-            <h3>Messwerte</h3><div className="measure-grid">{([['lufs','LUFS'],['true_peak','dBTP'],['lra','LRA'],['sample_peak','dBFS'],['bpm','BPM']] as const).map(([key, label]) => <div key={key}><strong>{typeof measured[key] === 'number' ? Number(measured[key]).toFixed(2) : '–'}</strong><small>{label}</small></div>)}</div>
-            {asset.role === 'analysis' && asset.meta.report && <details><summary>Analyseprotokoll</summary><pre>{JSON.stringify(asset.meta.report, null, 2)}</pre></details>}</div>}
+          {asset.role === 'midi' && ((midiView ?? asset.meta.midi)?.tracks?.length
+            ? <Piano key={asset.id} asset={asset} view={midiView} change={view => config('view', view, `midi:${asset.id}`)} edit={() => choose('midi')} />
+            : <TempoMap key={asset.id} asset={asset} />)}
+          {asset.role === 'analysis' && <AnalysisResult key={asset.id} asset={asset} />}
+          {audio(asset) && typeof asset.meta.lufs === 'number' && <section className="measure" aria-label="Messwerte">
+            <h3>Messwerte</h3><ResultMetrics values={[
+              ['Lautheit · LUFS', asset.meta.lufs], ['True Peak · dBTP', asset.meta.true_peak], ['Dynamik · LRA', asset.meta.lra],
+              ['Pegel · dBFS', asset.meta.sample_peak], ['Tempo · BPM', asset.meta.bpm],
+            ]} /></section>}
           {parentJob && <details className="grid-panel"><summary>Herkunft und Parameter{stalePreview ? ' · Vorschau mit älteren Parametern' : asset.meta.preview_render ? ' · Auswahlvorschau' : ''}</summary><p className="hint">{asset.meta.engine} · {source?.name || 'Projektquelle'}{asset.meta.seed !== undefined ? ` · Seed ${asset.meta.seed}` : ''}</p><pre>{JSON.stringify(parentJob.params, null, 2)}</pre></details>}
         </>}
       </section>
       {hideInspector && <button className="reopen desktop-only" onClick={() => setHideInspector(false)}>Werkzeuge</button>}
       <aside className={`inspector panel ${pane === 'inspector' ? 'panel-shown' : ''}`}>
         <div className="panel-heading"><h2>Inspektor</h2><button className="plain desktop-only" aria-label="Inspektor einklappen" onClick={() => setHideInspector(true)}>›</button><button className="plain compact-only" aria-label="Inspektor schließen" onClick={() => setPane('')}>×</button></div>
-        <Inspector tool={tool} setTool={choose} settings={tool === 'midi' && asset ? { ...settings, view: singleSettings(`midi:${asset.id}`).view ?? asset.meta.midi } : settings}
+        <Inspector tool={tool} setTool={choose} settings={tool === 'midi' && asset ? { ...settings, view: midiView ?? asset.meta.midi } : settings}
           change={config} asset={asset} assets={assets} selected={selected} project={project} caps={caps}
+          openSource={source ? () => { pick(source); setPane('') } : undefined}
+          rack={{ selected: rackIndex, select: setRackIndex, running: player.liveActive && !player.loading, read: player.readLive,
+            expanded: rackExpanded, expand: expandRack, status: liveStatus, playing: player.liveActive, render: saveFxSelection,
+            playback: readyForLive ? () => player.liveActive ? player.pause() : startLive() : undefined }}
+          sourceKey={sourceKey} estimatedKey={estimatedKey} setSourceKey={value => config('source', value ?? null, keyGroup)}
           region={region} setRegion={setRegion} slices={slices} setSlices={value => asset && config('slices', value, regionGroup)}
           setGrid={(bpm, downbeat) => update({ ...edit, bpm, draft: { ...edit.draft, downbeat } })}
           tracks={tracks} setTrack={(item, track) => draft({ tracks: { ...tracks, [item]: track } })} run={submit} busy={running} />
@@ -476,12 +648,15 @@ function WorkspaceView({ current, id, back, open, caps, sharedPending, refresh }
     </div>
     <footer className="bottom">
       <div className="transport" aria-label="Zentraler Transport">
-        <div className="inline transport-buttons"><button className="play" aria-label={player.playing ? 'Pause' : 'Abspielen'} disabled={!audio(asset) && asset?.role !== 'midi'} onClick={() => player.playing ? player.pause() : listen()}>{player.playing ? 'Ⅱ' : '▶'}</button>
-          <button aria-label="Stopp" onClick={() => { player.pause(); player.seek(0) }}>■</button><TransportTime clock={player.position} /></div>
-        <div className="inline transport-options"><button disabled={!audio(asset)} aria-pressed={loop} onClick={() => { setLoop(!loop); if (player.playing) listen(undefined, player.cursor.current, side, !loop) }}>Loop</button>
-          <div className="ab"><button aria-pressed={side === 'base'} disabled={!source} onClick={() => alternate('base')}>A · Quelle</button><button aria-pressed={side === 'new'} disabled={!source} onClick={() => alternate('new')}>B · Variante</button></div>
-          <button aria-pressed={matched} disabled={!pairReady} title={pairReady ? undefined : 'Beide Versionen zuerst auf LUFS prüfen'} onClick={() => setMatched(!matched)}>Pegelabgleich</button>
-          <label className="monitor">Abhörpegel <input type="range" min="0" max="1" step=".01" value={player.volume} onChange={event => player.setVolume(Number(event.target.value))} /></label>
+        <div className="inline transport-buttons"><button className="play" aria-label={player.playing ? 'Pause' : 'Abspielen'} disabled={!player.playing && !canPlay} onClick={togglePlayback}>{player.playing ? <Pause size={17} fill="currentColor" /> : <Play size={17} fill="currentColor" />}</button>
+          <button aria-label="Stopp" onClick={() => { player.pause(); player.seek(0) }}><Square size={14} fill="currentColor" aria-hidden="true" /></button><TransportTime clock={player.position} /></div>
+        <OutputMeter playing={player.playing && !player.loading} read={player.readOutput} />
+        <div className="inline transport-options"><button disabled={!audio(asset)} aria-pressed={loop} onClick={() => { setLoop(!loop); if (player.playing && !player.liveActive) { if (fxSide) listenFx(fxSide, player.cursor.current, !loop); else listen(undefined, player.cursor.current, side, !loop) } }}><Repeat2 size={16} aria-hidden="true" /> Loop</button>
+          {player.liveActive ? <div className="ab"><button aria-pressed={liveSide === 'dry'} onClick={() => liveAB('dry')}>A · Quelle</button><button aria-pressed={liveSide === 'wet'} onClick={() => liveAB('wet')}>B · Effekt</button></div>
+            : <div className="ab"><button aria-pressed={side === 'base'} disabled={!source || !audio(asset)} onClick={() => alternate('base')}>A · Quelle</button><button aria-pressed={side === 'new'} disabled={!source || !audio(asset)} onClick={() => alternate('new')}>B · Variante</button></div>}
+          <button aria-pressed={!player.liveActive && matched} disabled={!pairReady || player.liveActive} title={pairReady ? undefined : 'Beide Versionen zuerst auf LUFS prüfen'} onClick={() => setMatched(!matched)}>Pegelabgleich</button>
+          <div className="monitor"><Dial label="Abhörpegel" min={0} max={100} value={Math.round(player.volume * 100)}
+            suffix="%" live onChange={value => player.setVolume(value / 100)} /></div>
         </div>
         {player.loading && <span className="hint" role="status">Audio wird gepuffert …</span>}
       </div>
@@ -493,7 +668,7 @@ function WorkspaceView({ current, id, back, open, caps, sharedPending, refresh }
             const missing = job.tool === 'separation' ? failed.filter(item => item.endsWith('.wav')).map(item => item.slice(0,-4))
               : job.tool === 'transcription' ? failed.filter(item => ['melody','drums','beat','chords'].includes(item)) : []
             return <article className="job" key={job.id}>
-            <div><strong>{tools[job.tool]?.[0] ?? 'Export'}</strong><small>{job.cancel_requested && !terminal.has(job.state) ? 'Abbruch angefordert' : stateLabels[job.state] || job.state} · {job.phase}{typeof job.params.seed === 'number' ? ` · Seed ${job.params.seed}` : ''}</small>{job.error && <p className="hint">{job.error}</p>}</div>
+            <div><strong>{job.tool === 'detect' && job.params.mode === 'key' ? 'Tonart erkennen' : tools[job.tool]?.[0] ?? 'Export'}</strong><small>{job.cancel_requested && !terminal.has(job.state) ? 'Abbruch angefordert' : stateLabels[job.state] || job.state} · {job.phase}{typeof job.params.seed === 'number' ? ` · Seed ${job.params.seed}` : ''}</small>{job.error && <p className="hint">{job.error}</p>}</div>
             <div className="job-actions">{job.progress !== null && !terminal.has(job.state) && <progress max={100} value={job.progress} aria-label="Fortschritt" />}
               {!terminal.has(job.state) && <button disabled={!!job.cancel_requested} onClick={async () => {
                 try { await api(`${route}/jobs/${job.id}/cancel`, 'POST'); setAbortMessage('Abbruch angefordert.'); await refresh() }

@@ -3,6 +3,7 @@
 import io
 import json
 import math
+import sqlite3
 import struct
 import tempfile
 import time
@@ -13,9 +14,10 @@ import zipfile
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from audio_core import engines
-from studio.app import create_app
+from studio.app import HostedWorkspace, create_app
 
 
 def wav(rate=48000, duration=4):
@@ -87,6 +89,109 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/modal/separation/health").status_code, 404)
         self.assertEqual(self.client.get("/api/capabilities").json()["tools"]["separation"], "needs_setup")
         self.assertEqual(self.upload(content=b"not audio").status_code, 422)
+
+    def test_live_effect_changes_on_same_socket_and_ticket_is_single_use(self):
+        if not self.client.get("/api/capabilities").json()["live_effects"]:
+            self.skipTest("Pedalboard benötigt")
+        asset = self.upload().json()
+        path = self.route + "/assets/" + asset["id"] + "/fx-live"
+        start = {"start": 0, "end": 4096, "position": 0, "chain": [{"effect": "Gain", "gain_db": 0}]}
+        self.assertEqual(self.client.post(path, json=start).status_code, 403)
+        session = self.client.post(path, headers=self.headers, json=start).raise_for_status().json()
+        args = {"subprotocols": ["xo-fx", session["ticket"]]}
+        with self.assertRaises(WebSocketDisconnect):
+            with self.client.websocket_connect(session["url"], headers={"Origin": "https://other.example"}, **args):
+                self.fail("Foreign origin redeemed a live ticket")
+        headers = {"Origin": "http://localhost:8765"}
+        with self.client.websocket_connect(session["url"], headers=headers, **args) as socket:
+            self.assertEqual(socket.receive_json(), {"ready": True})
+            socket.send_json({"loop": True})
+            first = socket.receive_bytes()
+            self.assertEqual(struct.unpack_from("<II", first), (0, 2048))
+            self.assertEqual(first[8:8200], first[8200:])
+            socket.send_json({"loop": True, "chain": [{"effect": "Gain", "gain_db": -12}]})
+            second = socket.receive_bytes()
+            self.assertEqual(struct.unpack_from("<II", second), (2048, 2048))
+            dry, wet = struct.unpack_from("<4096h", second, 8), struct.unpack_from("<4096h", second, 8200)
+            self.assertAlmostEqual(max(wet) / max(dry), 10 ** (-12 / 20), places=3)
+            socket.send_json({"loop": True})
+            self.assertEqual(struct.unpack_from("<II", socket.receive_bytes()), (0, 2048))
+        with self.assertRaises(WebSocketDisconnect):
+            with self.client.websocket_connect(session["url"], headers=headers, **args):
+                self.fail("Live ticket reused")
+
+    def test_compact_listening_windows_and_live_packets(self):
+        import audioop
+
+        asset = self.upload().json()
+        path = self.route + "/assets/" + asset["id"]
+        opus = self.client.get(path + "/window", params={"seconds": 1, "format": "opus"}).raise_for_status()
+        self.assertEqual(opus.headers["content-type"], "audio/ogg")
+        self.assertTrue(opus.content.startswith(b"OggS"))
+        if not self.client.get("/api/capabilities").json()["live_effects"]:
+            self.skipTest("Pedalboard benötigt")
+        start = {"start": 0, "end": 4097, "position": 0, "codec": "adpcm", "chain": [{"effect": "Gain"}]}
+        session = self.client.post(path + "/fx-live", headers=self.headers, json=start).raise_for_status().json()
+        self.assertEqual(session["codec"], "adpcm")
+        with self.client.websocket_connect(session["url"], headers={"Origin": "http://localhost:8765"},
+                                           subprotocols=["xo-fx", session["ticket"]]) as socket:
+            self.assertEqual(socket.receive_json(), {"ready": True})
+            socket.send_json({"loop": False, "blocks": 3})
+            batch = socket.receive_bytes()
+            cursor = 0
+            for expected_offset, expected in ((0, 2048), (2048, 2048), (4096, 1)):
+                offset, count = struct.unpack_from("<II", batch, cursor)
+                self.assertEqual(offset, expected_offset)
+                stride = 3 + (count + 1) // 2
+                size = 8 + 4 * stride
+                packet = batch[cursor:cursor + size]
+                cursor += size
+                self.assertEqual(count, expected)
+                stride = 3 + (count + 1) // 2
+                self.assertEqual(len(packet), 8 + 4 * stride)
+                channels = []
+                for channel in range(4):
+                    base = 8 + channel * stride
+                    state = struct.unpack_from("<hB", packet, base)
+                    data = packet[base + 3:base + stride]
+                    samples, _ = audioop.adpcm2lin(data, 2, state)
+                    channels.append(samples[:count * 2])
+                self.assertEqual(channels[:2], channels[2:])
+                if offset == 0:
+                    self.assertGreater(audioop.max(channels[0], 2), 100)
+            self.assertEqual(cursor, len(batch))
+            socket.send_json({"loop": False})
+            self.assertEqual(socket.receive_json(), {"end": True})
+
+    def test_hosted_workspace_protects_reads_and_checkpoints_mutations(self):
+        origin = "https://studio.example.test"
+        password = "test_password_for_isolated_workspace_0123"
+        catalog = self.root / "runtime" / "workspace.sqlite3"
+        checkpoint = self.root / "snapshot.sqlite3"
+
+        def backup(database):
+            with sqlite3.connect(database) as active, sqlite3.connect(checkpoint) as snapshot:
+                active.backup(snapshot)
+
+        app = create_app(self.root / "online", self.root / "missing.json", hosted=HostedWorkspace(
+            origin=origin, password=password, catalog=catalog, work=self.root / "scratch",
+            plugins=self.root / "plugins", persist=backup,
+        ))
+        with TestClient(app, base_url=origin) as client:
+            for path in ("/", "/favicon.png", "/api/projects", "/api/storage", "/api/session"):
+                response = client.get(path)
+                self.assertEqual(response.status_code, 401, path)
+                self.assertIn("Basic", response.headers["WWW-Authenticate"])
+            auth = ("studio", password)
+            self.assertEqual(client.get("/api/projects", auth=("studio", "falsch")).status_code, 401)
+            self.assertEqual(client.get("/api/projects", auth=auth, headers={"Origin": "https://other.example"}).status_code, 403)
+            self.assertEqual(client.post("/api/projects", auth=auth, json={"name": "Titel"}).status_code, 403)
+            token = client.get("/api/session", auth=auth).json()["session"]
+            response = client.post("/api/projects", auth=auth, headers={"Origin": origin, "X-Workspace-Session": token}, json={"name": "Titel"})
+            self.assertEqual(response.status_code, 201, response.text)
+            self.assertEqual(response.headers["X-Robots-Tag"], "noindex, nofollow")
+            with sqlite3.connect(checkpoint) as saved:
+                self.assertEqual(saved.execute("SELECT name FROM projects").fetchone(), ("Titel",))
         self.assertEqual(self.upload(content=b"#EXTM3U\nfile:///etc/passwd\n").status_code, 422)
         asset = self.upload().json()
         other = self.create()
@@ -198,6 +303,63 @@ class WorkspaceTests(unittest.TestCase):
         self.client.__enter__()
         response = self.client.get(f"{self.route}/assets/{asset['id']}/audio")
         self.assertEqual(response.content, self.fixture)
+
+    def test_effect_audition_preserves_source_bounds_and_tail(self):
+        if not engines.capabilities()["effects"]:
+            self.skipTest("Pedalboard benötigt")
+        asset = self.upload().json()
+        start, end, tail = 12000, 108000, 1.5
+        _, _, previews = self.job("effects", [asset["id"]], {
+            "preview": True, "start": start, "end": end, "tail": tail,
+            "chain": [{"effect": "Delay", "mix": .4}],
+        })
+        preview = previews[0]
+        self.assertEqual(preview["parents"], [asset["id"]])
+        self.assertEqual((preview["meta"]["source_start"], preview["meta"]["source_end"]), (start, end))
+        self.assertEqual(preview["meta"]["samples"], end - start + round(tail * asset["meta"]["rate"]))
+        self.assertEqual(len(preview["meta"]["comparison_lufs"]), 2)
+
+        for invalid in ("ChowTape", "/tmp/Unbekannt.vst3"):
+            response = self.client.post(self.route + "/runs/validate", headers=self.headers, json={
+                "id": str(uuid.uuid4()), "tool": "effects", "inputs": [asset["id"]],
+                "params": {"chain": [{"effect": invalid}]},
+            })
+            self.assertEqual(response.status_code, 422, response.text)
+
+    def test_key_detection_and_same_tempo_transposition(self):
+        available = engines.capabilities()
+        if not available["samples"] or not available["rubberband"]:
+            self.skipTest("librosa und Rubber Band benötigt")
+        import numpy as np
+
+        rate = 22050
+        t = np.arange(2 * rate) / rate
+        envelope = np.minimum(1, 80 * np.minimum(t, 2 - t))
+
+        def progression(chords):
+            return np.concatenate([envelope * sum((0.14 if i == 0 else 0.08) * np.sin(2 * np.pi * 261.625565 * 2 ** (note / 12) * t)
+                                                 for i, note in enumerate(notes)) for notes in chords])
+
+        minor = progression(((-15, -3, 0, 4), (-10, 2, 5, 9), (-8, 4, 8, 11), (-15, -3, 0, 4)))
+        self.assertEqual(engines.estimate_key(minor, rate), {"tonic": 9, "mode": "minor"})
+        self.assertIsNone(engines.estimate_key(np.zeros(2 * rate), rate))
+        major = progression(((-12, 0, 4, 7), (-7, 5, 9, 12), (-5, 7, 11, 14), (-12, 0, 4, 7)))
+        buffer = io.BytesIO()
+        with wave.open(buffer, "wb") as handle:
+            handle.setparams((1, 2, rate, 0, "NONE", "not compressed"))
+            handle.writeframes((major * 32767).astype("<i2").tobytes())
+        asset = self.upload(content=buffer.getvalue(), filename="Kadenz.wav").json()
+        _, _, reports = self.job("detect", [asset["id"]], {"mode": "key"})
+        source_key = reports[0]["meta"]["report"]["key"]
+        self.assertEqual(source_key, {"tonic": 0, "mode": "major"})
+        _, _, variants = self.job("stretch", [asset["id"]], {"pitch": 2, "source_key": source_key})
+        render = variants[0]
+        target = {"tonic": 2, "mode": "major"}
+        self.assertEqual(render["meta"]["key"], target)
+        self.assertEqual(render["meta"]["samples"], asset["meta"]["samples"])
+        self.assertEqual(render["parents"], [asset["id"]])
+        _, _, reports = self.job("detect", [render["id"]], {"mode": "key"})
+        self.assertEqual(reports[0]["meta"]["report"]["key"], target)
 
     def test_cut_mapping_and_selected_local_engines(self):
         asset = self.upload().json()

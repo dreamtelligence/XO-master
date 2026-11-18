@@ -999,7 +999,7 @@ def create_matchering_app():
         """Handle CORS preflight requests"""
         return {"status": "ok"}
     
-    workspace.register(web_app, "mastering", 50 * 1024 * 1024, automatic_master_audio,
+    workspace.register(web_app, "mastering", workspace.TRACK_MAX_BYTES, automatic_master_audio,
                        lambda job_id, o: (job_id, f"{job_id}.wav", job_id, o["mastering_intensity"],
                               o["output_formats"].split(","), o["bass_mono_making"], True, o["lufs_targeting"]), mastering_status)
     return web_app

@@ -1170,7 +1170,7 @@ def create_transcription_app():
         """Handle CORS preflight requests"""
         return {"status": "ok"}
     
-    workspace.register(web_app, "transcription", 100 * 1024 * 1024, transcribe_complete_audio,
+    workspace.register(web_app, "transcription", workspace.TRACK_MAX_BYTES, transcribe_complete_audio,
                        lambda job_id, o: (job_id, f"{job_id}_original.wav", job_id, o), transcription_status)
     return web_app
 

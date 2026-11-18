@@ -16,7 +16,8 @@ if __name__ == "__main__":
     inputs = [(Path(path), asset) for path, asset in request["inputs"]]
     try:
         with contextlib.redirect_stdout(sys.stderr):
-            files = list(local_render(request["tool"], inputs, request["params"], request["project"], spec.parent, lambda: False))
+            files = list(local_render(request["tool"], inputs, request["params"], request["project"], spec.parent,
+                                      lambda: False, request.get("plugin_catalog")))
     except UserError as error:
         result = {"error": str(error)}
     else:

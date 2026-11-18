@@ -2,17 +2,19 @@
 
 import argparse
 import asyncio
+import base64
 import contextlib
 import re
 import secrets
 import tempfile
 import threading
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
-from urllib.parse import unquote
+from typing import Any, Callable, Literal
+from urllib.parse import unquote, urlsplit
 from uuid import UUID
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
@@ -21,6 +23,7 @@ from starlette.concurrency import run_in_threadpool
 from audio_core import engines
 from dev_server import CONFIG_PATH, ROOT, create_server, load_config
 from studio import modal_adapter
+from studio.live import LiveEffects
 from studio.store import AUDIO, BUDGET, MAX_UPLOAD, MIB, RESERVE, TOOLS, Problem, Store, data_path
 
 MEDIA = {".wav": "audio/wav", ".mp3": "audio/mpeg", ".flac": "audio/flac", ".m4a": "audio/mp4",
@@ -69,6 +72,14 @@ class Run(Model):
     draft_revision: int | None = Field(default=None, ge=0)
 
 
+class LiveRequest(Model):
+    start: int = Field(ge=0)
+    end: int = Field(gt=0)
+    position: int = Field(ge=0)
+    chain: list[dict[str, Any]] = Field(min_length=1, max_length=12)
+    codec: Literal["pcm", "adpcm"] = "pcm"
+
+
 class RecipeStep(Model):
     tool: str = Field(max_length=32)
     params: dict[str, Any] = Field(default_factory=dict)
@@ -88,14 +99,38 @@ def failure(status, message, code):
     return JSONResponse({"code": code, "detail": message, "retry_safe": status in (404, 422, 503)}, status_code=status)
 
 
-def create_app(root=None, config_path=CONFIG_PATH, *, port=8765, dev=False, legacy=False):
+@dataclass(frozen=True)
+class HostedWorkspace:
+    origin: str
+    password: str = field(repr=False)
+    catalog: Path
+    work: Path
+    plugins: Path
+    persist: Callable[[Path], None] = field(repr=False)
+    public_origin: str | None = None
+
+
+def create_app(root=None, config_path=CONFIG_PATH, *, port=8765, dev=False, legacy=False, hosted: HostedWorkspace | None = None):
     token = secrets.token_urlsafe(40)
+    live_effects = LiveEffects()
     hosts = {f"localhost:{port}", f"127.0.0.1:{port}"}
     if dev:
         hosts |= {"localhost:5173", "127.0.0.1:5173"}
+    if hosted:
+        target = urlsplit(hosted.origin)
+        if (not root or dev or legacy or target.scheme != "https" or not target.hostname
+                or hosted.origin != f"https://{target.hostname}" or not re.fullmatch(r"[A-Za-z0-9_-]{32,}", hosted.password)
+                or (hosted.public_origin and not re.fullmatch(r"https://[a-z0-9.-]+", hosted.public_origin))):
+            raise ValueError("Ungültige Konfiguration für den geschützten Online-Workspace.")
+        hosts = {target.netloc}
+        authorization = b"Basic " + base64.b64encode(f"studio:{hosted.password}".encode("ascii"))
+    live_origins = {hosted.origin, hosted.public_origin} - {None} if hosted else {f"http://{host}" for host in hosts}
+    live_endpoints = {f"wss://{host}" if hosted else f"ws://{host}" for host in hosts}
+    policy = CSP.replace("connect-src 'self'", "connect-src 'self' " + " ".join(sorted(live_endpoints)))
     @contextlib.asynccontextmanager
     async def lifespan(app):
-        app.state.store = Store(root or data_path(), load_config(config_path))
+        options = {"catalog": hosted.catalog, "work": hosted.work, "persist": hosted.persist, "plugin_root": hosted.plugins} if hosted else {}
+        app.state.store = Store(root or data_path(), load_config(config_path), **options)
         old = None
         try:
             if legacy:
@@ -107,17 +142,25 @@ def create_app(root=None, config_path=CONFIG_PATH, *, port=8765, dev=False, lega
                 old.shutdown()
                 old.server_close()
             app.state.store.close()
+            if hosted:
+                await run_in_threadpool(app.state.store.checkpoint)
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None, redirect_slashes=False)
 
     @app.middleware("http")
-    async def loopback(request, next_handler):
+    async def workspace_boundary(request, next_handler):
         host = request.headers.get("host")
         origin = request.headers.get("origin")
         fetch = request.headers.get("sec-fetch-site")
         raw_path = unquote(request.scope.get("raw_path", b"").decode("ascii", "replace"))
-        if host not in hosts or (origin and origin != f"http://{host}") or fetch not in (None, "none", "same-origin"):
-            return failure(403, "Nur Anfragen aus diesem lokalen Arbeitsbereich sind erlaubt.", "origin")
+        expected_origin = hosted.origin if hosted else f"http://{host}"
+        navigation = hosted and request.method in ("GET", "HEAD") and request.url.path == "/" and request.headers.get("sec-fetch-mode") == "navigate"
+        if host not in hosts or (origin and origin != expected_origin) or (fetch not in (None, "none", "same-origin") and not navigation):
+            return failure(403, "Die Anfrage stammt nicht aus diesem Arbeitsbereich.", "origin")
+        if hosted and not secrets.compare_digest(request.headers.get("authorization", "").encode("utf-8"), authorization):
+            response = failure(401, "Dieser Workspace ist geschützt. Melde dich mit deinem Zugang an.", "authorization")
+            response.headers.update({"WWW-Authenticate": 'Basic realm="Artist Workspace", charset="UTF-8"', "Cache-Control": "no-store"})
+            return response
         if "\\" in raw_path or any(part in (".", "..") for part in raw_path.split("/")):
             return failure(400, "Ungültiger Dateipfad.", "path")
         if request.method not in ("GET", "HEAD", "OPTIONS"):
@@ -133,9 +176,13 @@ def create_app(root=None, config_path=CONFIG_PATH, *, port=8765, dev=False, lega
             if int(length) > limit:
                 return failure(413, "Diese Datei oder Anfrage ist zu groß.", "size")
         response = await next_handler(request)
-        response.headers.update({"Content-Security-Policy": CSP, "X-Content-Type-Options": "nosniff",
+        if hosted and response.status_code < 300 and request.method not in ("GET", "HEAD", "OPTIONS") and not request.url.path.endswith(("/runs/validate", "/fx-live")):
+            await run_in_threadpool(app.state.store.checkpoint)
+        response.headers.update({"Content-Security-Policy": policy, "X-Content-Type-Options": "nosniff",
                                  "Cross-Origin-Resource-Policy": "same-origin", "X-Frame-Options": "DENY",
                                  "Referrer-Policy": "no-referrer", "Cache-Control": "no-store"})
+        if hosted:
+            response.headers.update({"Strict-Transport-Security": "max-age=31536000", "X-Robots-Tag": "noindex, nofollow"})
         return response
 
     @app.exception_handler(Problem)
@@ -166,7 +213,9 @@ def create_app(root=None, config_path=CONFIG_PATH, *, port=8765, dev=False, lega
     def capabilities():
         statuses = {key: "needs_setup" if not store().engines[engine] else "experimental" if key == "audiosr" else "ready"
                     for key, engine in TOOLS.items()}
-        return {"tools": statuses, "rates": [44100, 48000], "upload_bytes": MAX_UPLOAD, "generation_seconds": 47,
+        return {"tools": statuses, "online": hosted is not None, "effect_plugins": {key: plugin["version"] for key, plugin in store().effect_plugins.items()},
+                "live_effects": store().engines["effects"],
+                "rates": [44100, 48000], "upload_bytes": MAX_UPLOAD, "generation_seconds": 47,
                 "batch_variants": 3, "duration_limit": 1800, "storage_bytes": BUDGET, "reserve_bytes": RESERVE,
                 "used_bytes": store().usage(), "legacy": legacy}
 
@@ -204,7 +253,7 @@ def create_app(root=None, config_path=CONFIG_PATH, *, port=8765, dev=False, lega
         if size == 0:
             raise Problem("Die Datei ist leer.")
         await run_in_threadpool(store().require_space, size * 2)
-        with tempfile.TemporaryDirectory(dir=store().root / "work") as tmp:
+        with tempfile.TemporaryDirectory(dir=store().work) as tmp:
             target = Path(tmp) / "upload"
             received = 0
             with target.open("xb") as file:
@@ -239,8 +288,20 @@ def create_app(root=None, config_path=CONFIG_PATH, *, port=8765, dev=False, lega
         meta = store().asset(str(id), str(asset))["meta"]
         return {"peaks": meta.get("peaks", []), "seconds": meta.get("seconds"), "samples": meta.get("samples")}
 
+    @app.post("/api/projects/{id}/assets/{asset}/fx-live")
+    async def start_live(id: UUID, asset: UUID, body: LiveRequest, request: Request):
+        endpoint = f"{'wss' if hosted else 'ws'}://{request.headers['host']}/api/fx-live"
+        return live_effects.issue(store(), str(id), str(asset), body.model_dump(), endpoint)
+
+    @app.websocket("/api/fx-live")
+    async def fx_live(socket: WebSocket):
+        if socket.headers.get("host") not in hosts or socket.headers.get("origin") not in live_origins:
+            await socket.close(code=1008)
+            return
+        await live_effects.connect(socket)
+
     @app.get("/api/projects/{id}/assets/{asset}/window")
-    def audio_window(id: UUID, asset: UUID, request: Request, seconds: float, start: float = 0):
+    def audio_window(id: UUID, asset: UUID, request: Request, seconds: float, start: float = 0, format: Literal["wav", "opus"] = "wav"):
         item = store().asset(str(id), str(asset))
         if item["role"] not in AUDIO:
             raise Problem("Dieses Asset enthält kein Audio.", 404)
@@ -251,7 +312,11 @@ def create_app(root=None, config_path=CONFIG_PATH, *, port=8765, dev=False, lega
         seconds = min(seconds, item["meta"]["seconds"] - start)
         if seconds <= 0:
             raise Problem("Das Hörfenster liegt hinter dem Signalende.", 416, "window")
-        with tempfile.TemporaryDirectory(dir=store().root / "work") as tmp:
+        if format == "opus":
+            body, _ = engines.ffmpeg("-ss", start, "-i", store().path(item), "-t", seconds, "-map", "0:a:0",
+                                     "-ar", "48000", "-c:a", "libopus", "-b:a", "128k", "-f", "ogg", "pipe:1")
+            return Response(body, media_type="audio/ogg")
+        with tempfile.TemporaryDirectory(dir=store().work) as tmp:
             wav = Path(tmp) / "window.wav"
             engines.ffmpeg("-ss", start, "-i", store().path(item), "-t", seconds, "-ar", "32000",
                            "-c:a", "pcm_s16le", wav)
@@ -327,7 +392,7 @@ def create_app(root=None, config_path=CONFIG_PATH, *, port=8765, dev=False, lega
     @app.api_route("/assets/{filename}", methods=["GET", "HEAD"])
     def static_asset(filename: str):
         file = ROOT / "web/dist/assets" / filename
-        if not re.fullmatch(r"[A-Za-z0-9_-]+\.(?:js|css|woff2)", filename) or not file.is_file():
+        if not re.fullmatch(r"[A-Za-z0-9_-]+\.(?:js|css|woff2|jpg)", filename) or not file.is_file():
             return failure(404, "Datei nicht gefunden.", "not_found")
         return FileResponse(file)
 
@@ -344,4 +409,4 @@ if __name__ == "__main__":
     parser.add_argument("--legacy", action="store_true")
     args = parser.parse_args()
     uvicorn.run(create_app(args.data, args.config, port=args.port, dev=args.dev, legacy=args.legacy),
-                host="127.0.0.1", port=args.port, workers=1, access_log=False)
+                host="127.0.0.1", port=args.port, workers=1, access_log=False, ws_max_size=16384)

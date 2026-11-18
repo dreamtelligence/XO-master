@@ -1,6 +1,7 @@
 """Private SQLite catalog and transactional workspace queue."""
 
 import contextlib
+import errno
 import fcntl
 import hashlib
 import json
@@ -107,14 +108,35 @@ def data_path():
     return Path.home() / "Library/Application Support/Dreamtelligence XO"
 
 
+def publish_file(source, target):
+    try:
+        os.replace(source, target)
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+        with tempfile.NamedTemporaryFile(dir=target.parent, prefix=".publish-", delete=False) as pending:
+            staged = Path(pending.name)
+            try:
+                with source.open("rb") as data:
+                    shutil.copyfileobj(data, pending, length=MIB)
+                pending.close()
+                os.replace(staged, target)
+            finally:
+                staged.unlink(missing_ok=True)
+        source.unlink()
+
+
 class Store:
-    def __init__(self, root, config, *, start=True):
+    def __init__(self, root, config, *, start=True, catalog=None, work=None, persist=None, plugin_root=None):
         self.root = root
+        self.catalog = catalog or root / "workspace.sqlite3"
+        self.work = work or root / "work"
+        self.persist = persist
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.root.chmod(0o700)
-        for dirname in ("blobs", "listen", "work"):
-            (root / dirname).mkdir(mode=0o700, exist_ok=True)
-        self.lock = (root / "workspace.lock").open("a")
+        for directory in (root / "blobs", root / "listen", self.work, self.catalog.parent):
+            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.lock = (self.catalog.parent / "workspace.lock").open("a")
         try:
             fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -124,6 +146,7 @@ class Store:
         self.engines = engines.capabilities() | {
             service: bool(config and service in config["services"]) for service in modal_adapter.ROUTES
         }
+        self.effect_plugins = engines.effect_plugins(plugin_root or root / "plugins") if self.engines["effects"] else {}
         self.code_hash = hexhash({source.name: filehash(source) for source in (
             Path(__file__), Path(engines.__file__), Path(modal_adapter.__file__))})
         self.stop = threading.Event()
@@ -157,7 +180,7 @@ class Store:
 
     @contextlib.contextmanager
     def db(self):
-        conn = sqlite3.connect(self.root / "workspace.sqlite3", timeout=10)
+        conn = sqlite3.connect(self.catalog, timeout=10)
         conn.execute("PRAGMA foreign_keys=ON")
         conn.row_factory = sqlite3.Row
         try:
@@ -165,6 +188,10 @@ class Store:
                 yield conn
         finally:
             conn.close()
+
+    def checkpoint(self):
+        if self.persist:
+            self.persist(self.catalog)
 
     def close(self):
         self.stop.set()
@@ -327,7 +354,7 @@ class Store:
             meta |= measured
             if not (self.root / "listen" / f"{digest}.mp3").exists():
                 self.require_space(preview.stat().st_size)
-                os.replace(preview, self.root / "listen" / f"{digest}.mp3")
+                publish_file(preview, self.root / "listen" / f"{digest}.mp3")
                 self.limit_listen()
         elif role == "midi" and self.engines["midi"]:
             meta["midi"] = engines.notes_from_file(path)
@@ -336,7 +363,7 @@ class Store:
         destination = self.root / "blobs" / digest
         if not destination.exists():
             self.require_space(path.stat().st_size)
-            os.replace(path, destination)
+            publish_file(path, destination)
         return digest, suffix, meta
 
     def insert(self, conn, project, display, role, prepared, parents=(), job=None):
@@ -410,9 +437,13 @@ class Store:
             for key, label in (("source_bpm", "Quelltempo"), ("target_bpm", "Zieltempo")):
                 engines.number(params.get(key, project["bpm"]), 30, 300, label)
             engines.number(params.get("pitch", 0), -12, 12, "Halbtöne")
+            if "source_key" in params:
+                engines.tonal_key(params["source_key"])
         if tool == "mastering":
             engines.number(params.get("lufs", -14), -30, -8, "LUFS-Ziel")
             engines.number(params.get("true_peak", -1), -6, -0.1, "True-Peak-Grenze")
+        if tool == "effects":
+            engines.effect_chain(params, self.effect_plugins)
         if tool == "reference" and assets[0]["hash"] == assets[1]["hash"]:
             raise Problem("Mix und Referenz müssen unterschiedliche Audiodateien sein.")
         if tool == "audiosr" and not params.get("preview"):
@@ -511,8 +542,11 @@ class Store:
         return ids
 
     def cache_key(self, tool, references, params, project):
-        return hexhash({"schema": 1, "code": self.code_hash, "tool": tool, "inputs": references, "params": params,
-                        "rate": project["rate"], "bpm": project["bpm"], "meter": project["meter"]})
+        key = {"schema": 1, "code": self.code_hash, "tool": tool, "inputs": references, "params": params,
+               "rate": project["rate"], "bpm": project["bpm"], "meter": project["meter"]}
+        if tool == "effects" and self.effect_plugins:
+            key["plugins"] = {key: plugin["sha256"] for key, plugin in self.effect_plugins.items()}
+        return hexhash(key)
 
     def advance_recipes(self, conn):
         ready = conn.execute("""
@@ -636,6 +670,12 @@ class Store:
                     message = JOB_FAILURE
                 self.update(job["id"], state="failed", phase="Verarbeitung fehlgeschlagen",
                             error=message, progress=None)
+            finally:
+                if self.persist:
+                    try:
+                        self.checkpoint()
+                    except Exception:
+                        logger.error("Der Online-Katalog konnte nach dem Auftrag nicht gesichert werden.")
 
     def execute(self, job, cloud):
         id, project_id, tool, params = (job[key] for key in ("id", "project", "tool", "params"))
@@ -650,7 +690,7 @@ class Store:
             inputs.append((self.path(asset), asset))
         if not cloud and tool != "export" and self.cached(job, cancelled):
             return
-        with tempfile.TemporaryDirectory(dir=self.root / "work", prefix=id + "-") as tmp:
+        with tempfile.TemporaryDirectory(dir=self.work, prefix=id + "-") as tmp:
             directory = Path(tmp)
             partial = {}
             if cloud:
@@ -660,11 +700,13 @@ class Store:
                         self.update(id, state="finalizing", phase="Teilergebnisse werden lokal geprüft")
                     else:
                         self.update(id, **data)
+                        if self.persist and (data.get("remote_id") or data.get("phase") == "Cloud-Start gesendet"):
+                            self.checkpoint()
                 outputs = modal_adapter.render(self.config, job, inputs, directory, publish, cancelled, project)
             else:
                 if cancelled():
                     raise engines.Cancelled()
-                self.update(id, phase="Lokaler Render", error=None)
+                self.update(id, phase="Workspace-Render" if self.persist else "Lokaler Render", error=None)
                 outputs = (self.export(inputs, params, project, directory, cancelled) if tool == "export"
                            else self.render_local(job, inputs, directory, cancelled))
             results = []
@@ -692,6 +734,7 @@ class Store:
                              (state, phase, partial.get("error"), time.time(), id))
                 conn.execute("INSERT INTO job_events(job,state,phase,created) VALUES(?,?,?,?)", (id, state, phase, time.time()))
             if cloud:
+                self.checkpoint()
                 try:
                     modal_adapter.acknowledge(self.config, tool, self.job(project_id, id))
                 except modal_adapter.CloudHTTPError as error:
@@ -727,9 +770,13 @@ class Store:
     def render_local(self, job, inputs, directory, cancelled):
         import sys
         description = directory / "work.json"
-        description.write_text(jsonstr({"tool": job["tool"], "inputs": [[str(path), asset] for path, asset in inputs],
-                                        "params": job["params"], "project": job["snapshot"]["project"]}))
-        raw, _ = engines.run([sys.executable, "-m", "studio.worker", description], cancelled)
+        work = {"tool": job["tool"], "inputs": [[str(path), asset] for path, asset in inputs],
+                "params": job["params"], "project": job["snapshot"]["project"]}
+        if job["tool"] == "effects":
+            work["plugin_catalog"] = self.effect_plugins
+        description.write_text(jsonstr(work))
+        timeout = 60 if job["tool"] == "effects" and job["params"].get("preview") else 900
+        raw, _ = engines.run([sys.executable, "-m", "studio.worker", description], cancelled, timeout=timeout)
         outputs = json.loads(raw)
         if isinstance(outputs, dict):
             raise Problem(outputs["error"])
@@ -818,7 +865,7 @@ Beim Ausrichten in der DAW automatisches Warping/Flex gezielt prüfen.
                 settings = manifest["project"]
                 self.project_settings(settings["rate"], settings["meter"], settings["purpose"])
                 ids, ready = {}, []
-                with tempfile.TemporaryDirectory(dir=self.root / "work") as tmp:
+                with tempfile.TemporaryDirectory(dir=self.work) as tmp:
                     directory = Path(tmp)
                     used = set()
                     for index, item in enumerate(items):

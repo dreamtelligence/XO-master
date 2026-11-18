@@ -12,6 +12,7 @@ import modal
 from modal.exception import NotFoundError
 
 CHUNK_SIZE = 4 * 1024 * 1024
+TRACK_MAX_BYTES = 256 * 1024 * 1024
 STAGING_PATH = "/workspace-staging"
 staging = modal.Volume.from_name("artist-workspace-staging-v1", create_if_missing=True)
 claims = modal.Dict.from_name("artist-workspace-claims-v1", create_if_missing=True)

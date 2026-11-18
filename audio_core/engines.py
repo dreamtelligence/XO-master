@@ -182,7 +182,92 @@ EFFECTS = {
     "Limiter": {"threshold_db": [-24, 0, -1], "release_ms": [1, 500, 100]},
     "Reverb": {"room_size": [0, 1, 0.4], "wet_level": [0, 1, 0.25], "dry_level": [0, 1, 0.75]},
     "Delay": {"delay_seconds": [0.01, 2, 0.25], "feedback": [0, 0.8, 0.25], "mix": [0, 1, 0.25]},
+    "ChowTape": {"tape_drive": [0, 1, .54], "tape_saturation": [0, 1, .64], "dry_wet": [0, 100, 70]},
+    "ChowMatrix": {"time_ms": [40, 1000, 375], "feedback_percent": [0, 70, 40], "wet": [-36, 0, -10]},
+    "DragonflyPlate": {"wet_level": [0, 100, 27], "decay_s": [.1, 5, 1.35], "predelay_ms": [0, 100, 18]},
 }
+PLUGIN_BUNDLES = {
+    "ChowTape": ("CHOWTapeModel.vst3", "2.11.4", "3d7f18863f3680d69aaf38a1216905bb1efdc2782a480c10f15f910f90861b98"),
+    "ChowMatrix": ("ChowMatrix.vst3", "1.3.0", "978bb2366b2c314de91a435e08459e3ef57023b82ac76b5cee484a9a39f68bc5"),
+    "DragonflyPlate": ("DragonflyPlateReverb.vst3", "3.2.10", "5f874c3eb103149b1127bc5304385643bf297ad5d2d2f7694c87272641e86ac1"),
+}
+LINUX_PLUGIN_HASHES = {
+    "ChowTape": "3d0914651e404d393f509825d53f3d9397c4d037f065a90055b0c7ba42ea1360",
+    "ChowMatrix": "611fd1f0191ef7f2c76d545b5bff13c06fd679320343248bbfbecdb2095ba76b",
+    "DragonflyPlate": "a389683700a09b321728bc5a2d857492eddc437c9a19e3c54c430ac7c90c0fb4",
+}
+
+
+def effect_plugins(root):
+    import hashlib
+
+    result = {}
+    for key, (filename, version_name, expected) in PLUGIN_BUNDLES.items():
+        bundle = root / filename
+        if sys.platform == "linux":
+            executable = bundle / "Contents" / "x86_64-linux" / f"{bundle.stem}.so"
+            expected = LINUX_PLUGIN_HASHES[key]
+        else:
+            executable = bundle / "Contents" / "MacOS" / bundle.stem
+        if not executable.is_file():
+            continue
+        try:
+            with executable.open("rb") as binary_file:
+                digest = hashlib.file_digest(binary_file, "sha256").hexdigest()
+        except OSError:
+            continue
+        if digest == expected:
+            result[key] = {"path": str(bundle), "version": version_name, "sha256": digest}
+    return result
+
+
+def effect_chain(params, installed):
+    chain = params.get("chain", [])
+    if not isinstance(chain, list) or not 1 <= len(chain) <= 12:
+        raise UserError("Bitte 1–12 Effekte in die Kette legen.")
+    active = []
+    for step in chain:
+        effect = step.get("effect") if isinstance(step, dict) else None
+        if not isinstance(effect, str) or effect not in EFFECTS:
+            raise UserError("Die Effektkette enthält ein unbekanntes Modul.")
+        if step.get("bypass"):
+            continue
+        if effect in PLUGIN_BUNDLES and effect not in installed:
+            raise UserError("Ein VST3 aus der Effektkette fehlt in der lokalen Installation.")
+        values = {key: number(step.get(key, default), low, high, key)
+                  for key, (low, high, default) in EFFECTS[effect].items()}
+        active.append((effect, values))
+    number(params.get("tail", 0), 0, 5, "Ausklang")
+    return active
+
+
+def set_effect_parameters(plugin, name, values):
+    if name == "ChowMatrix":
+        # The pinned matrix has two default nodes and a JUCE range skewed around 200 ms.
+        skew = math.log(.5) / math.log(200 / 1500)
+        for node, multiplier in ((1, 1), (2, 1.5)):
+            plugin.parameters[f"node_{node}_delay"].raw_value = (values["time_ms"] * multiplier / 1500) ** skew
+            plugin.parameters[f"node_{node}_feedback"].raw_value = values["feedback_percent"] / 100
+        plugin.dry = 0
+        plugin.wet = values["wet"]
+        return
+    for key, value in values.items():
+        setattr(plugin, key, value)
+    if name == "DragonflyPlate":
+        plugin.dry_level = 100 - values["wet_level"]
+
+
+def make_effect(pb, name, values, installed):
+    if name not in installed:
+        return getattr(pb, name)(**values)
+    try:
+        plugin = pb.load_plugin(installed[name]["path"], initialization_timeout=7)
+        if not plugin.is_effect:
+            raise ValueError("VST3 is not an audio effect")
+        set_effect_parameters(plugin, name, values)
+        return plugin
+    except (AttributeError, KeyError, OSError, RuntimeError, ValueError) as exc:
+        raise UserError(f"Das lokale VST3 {name} konnte nicht geladen oder eingestellt werden.") from exc
 
 
 def capabilities():
@@ -197,13 +282,54 @@ def capabilities():
     ]}
 
 
+def estimate_key(y, rate):
+    import librosa
+    import numpy as np
+
+    if len(y) < rate or np.max(np.abs(y)) < 1e-4:
+        return None
+    # Sample the beginning, middle and end of longer tracks to bound CQT work.
+    span = 24 * rate
+    starts = np.linspace(0, max(0, len(y) - span), 3, dtype=int) if len(y) > 3 * span else range(0, len(y), span)
+    chroma = np.zeros(12)
+    for start in starts:
+        section = y[start:start + span]
+        if len(section) >= rate and np.max(np.abs(section)) >= 1e-4:
+            chroma += librosa.feature.chroma_cqt(y=section, sr=rate, norm=None).sum(axis=1)
+    if np.count_nonzero(chroma > chroma.max() * 0.18) < 3:
+        return None
+    # Krumhansl–Kessler tone profiles in chromatic order from the tonic.
+    profiles = {
+        "major": [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88],
+        "minor": [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17],
+    }
+    if np.std(chroma) < 1e-9:
+        return None
+    scores = sorted((float(np.corrcoef(chroma, np.roll(profile, tonic))[0, 1]), tonic, mode)
+                    for mode, profile in profiles.items() for tonic in range(12))
+    score, tonic, mode = scores[-1]
+    if score < 0.55 or score - scores[-2][0] < 0.035:
+        return None
+    return {"tonic": tonic, "mode": mode}
+
+
+def tonal_key(value):
+    if (not isinstance(value, dict) or type(value.get("tonic")) is not int or not 0 <= value["tonic"] < 12
+            or value.get("mode") not in ("major", "minor")):
+        raise UserError("Bitte eine gültige Dur- oder Molltonart wählen.")
+    return {"tonic": value["tonic"], "mode": value["mode"]}
+
+
 def detect(source, meta, params):
     import librosa
     y, rate = librosa.load(source, sr=22050, mono=True)
+    key = estimate_key(y, rate)
+    if params.get("mode") == "key":
+        return {"key": key, "origin": "librosa"}
     duration = meta["samples"]
     detected_bpm, beats = librosa.beat.beat_track(y=y, sr=rate)
     bpm = float(detected_bpm.item()) if detected_bpm.size else 0
-    result = {"bpm": bpm or None, "confidence": None, "origin": "librosa",
+    result = {"bpm": bpm or None, "confidence": None, "origin": "librosa", "key": key,
               "beats": [round(x * meta["rate"]) for x in librosa.frames_to_time(beats, sr=rate)
                         if 0 <= round(x * meta["rate"]) < duration]}
     if params.get("mode") == "oneshot":
@@ -290,7 +416,7 @@ def version(package):
     return f"{package} {installed_version(package)}"
 
 
-def local_render(tool, inputs, params, project, directory, cancelled):
+def local_render(tool, inputs, params, project, directory, cancelled, installed=None):
     """Yield (file, role, provenance) for one immutable job snapshot."""
     source, asset = inputs[0] if inputs else (None, None)
     meta = asset.get("meta", {}) if asset else {}
@@ -307,7 +433,7 @@ def local_render(tool, inputs, params, project, directory, cancelled):
         return
     if tool == "detect":
         report = detect(source, meta, params)
-        output = directory / "Grid und Slices.json"
+        output = directory / ("Tonart.json" if params.get("mode") == "key" else "Grid und Slices.json")
         output.write_text(json.dumps(report, ensure_ascii=False, indent=2))
         yield output, "analysis", {"engine": version("librosa"), **report}
         return
@@ -337,6 +463,7 @@ def local_render(tool, inputs, params, project, directory, cancelled):
         source_bpm = number(params.get("source_bpm", bpm), 30, 300, "Quelltempo")
         target_bpm = number(params.get("target_bpm", bpm), 30, 300, "Zieltempo")
         pitch = number(params.get("pitch", 0), -12, 12, "Halbtöne")
+        key = tonal_key(params["source_key"]) if "source_key" in params else None
         ratio = source_bpm / target_bpm
         audio = [(path, item) for path, item in inputs if item["role"] != "midi"]
         if not audio:
@@ -374,8 +501,10 @@ def local_render(tool, inputs, params, project, directory, cancelled):
                    "ratio": ratio, "pitch": pitch, "source_start": start, "source_rate": meta["rate"],
                    "rendered_samples": probe(stretched)["samples"] if len(audio) == 1 else None,
                    "preview_render": bool(params.get("preview"))}
+        if key and len(audio) == 1 and pitch == int(pitch):
+            details["key"] = {"tonic": (key["tonic"] + int(pitch)) % 12, "mode": key["mode"]}
         for i, (path, item) in enumerate(audio):
-            target = directory / f"Tempo {i + 1}.wav"
+            target = directory / ("Tonart.wav" if "key" in details and pitch and ratio == 1 else f"Tempo {i + 1}.wav")
             channels = item["meta"]["channels"]
             layout = "mono" if channels == 1 else "stereo"
             selectors = "|".join(f"c{j}=c{labels.index(f'{i}.{j}')}" for j in range(channels))
@@ -395,35 +524,46 @@ def local_render(tool, inputs, params, project, directory, cancelled):
         import pedalboard as pb
         from pedalboard.io import AudioFile
         import soundfile as sf
-        chain = params.get("chain", [])
-        if not isinstance(chain, list) or not 1 <= len(chain) <= 12:
-            raise UserError("Bitte 1–12 Effekte in die Kette legen.")
-        plugins = []
-        for step in chain:
-            effect = step["effect"]
-            values = {key: number(step.get(key, default), low, high, key)
-                      for key, (low, high, default) in EFFECTS[effect].items()}
-            if not step.get("bypass"):
-                plugins.append(getattr(pb, effect)(**values))
-        active = pb.Pedalboard(plugins)
+        installed = installed or {}
+        chain = effect_chain(params, installed)
+        identities = {effect: {k: info for k, info in installed[effect].items() if k != "path"}
+                      for effect, _ in chain if effect in installed}
+        active = pb.Pedalboard([make_effect(pb, effect, values, installed) for effect, values in chain])
         selection = directory / "Auswahl.wav"
-        start, _ = render_selection(source, selection, meta, params if params.get("preview") else {}, cancelled)
-        with AudioFile(str(selection)) as reader, sf.SoundFile(str(output), "w", reader.samplerate, reader.num_channels, subtype="FLOAT") as writer:
+        start, end = render_selection(source, selection, meta, params if params.get("preview") else {}, cancelled)
+        output = directory / ("FX-Vorschau.wav" if params.get("preview") else "Ergebnis.wav")
+        with AudioFile(str(selection)) as reader:
             import numpy as np
-            pending = reader.frames
-            while pending:
-                if cancelled():
-                    raise Cancelled()
-                block = reader.read(min(pending, 65536))
-                if not block.shape[-1]:
-                    raise UserError("Audiodecoder lieferte weniger Samples als gemeldet.")
-                writer.write(active(block, reader.samplerate, reset=False).T)
-                pending -= block.shape[-1]
-            tail = round(number(params.get("tail", 0), 0, 5, "Ausklang") * reader.samplerate)
-            if tail:
-                writer.write(active(np.zeros((reader.num_channels, tail), dtype=np.float32), reader.samplerate, reset=False).T)
+            channels = 2 if identities else reader.num_channels
+            tail = round(float(params.get("tail", 0)) * reader.samplerate)
+            with sf.SoundFile(str(output), "w", reader.samplerate, channels, subtype="FLOAT") as writer:
+                pending = reader.frames
+                while pending:
+                    if cancelled():
+                        raise Cancelled()
+                    block = reader.read(min(pending, 65536))
+                    if not block.shape[-1]:
+                        raise UserError("Audiodecoder lieferte weniger Samples als gemeldet.")
+                    pending -= block.shape[-1]
+                    if reader.num_channels < channels:
+                        block = np.repeat(block, channels, axis=0)
+                    writer.write(active(block, reader.samplerate, reset=False).T)
+                if tail:
+                    writer.write(active(np.zeros((channels, tail), dtype=np.float32), reader.samplerate, reset=False).T)
+                missing = end - start + tail - writer.frames
+                if missing > 0:
+                    flushed = active(np.zeros((channels, missing + 8192), dtype=np.float32), reader.samplerate, reset=False)
+                    if flushed.shape[-1] < missing:
+                        raise UserError("Ein Effekt lieferte keine vollständige Audioausgabe.")
+                    writer.write(flushed[:, :missing].T)
         engine = version("pedalboard")
-        info = {"source_start": start, "source_rate": meta["rate"], "preview_render": bool(params.get("preview"))}
+        info = {"source_start": start, "source_end": end, "source_rate": meta["rate"],
+                "preview_render": bool(params.get("preview")), "plugins": identities}
+        if params.get("preview"):
+            dry_lufs = qa(selection, cancelled)["lufs"]
+            wet_lufs = qa(output, cancelled)["lufs"]
+            if dry_lufs is not None and wet_lufs is not None:
+                info["comparison_lufs"] = [dry_lufs, wet_lufs]
     elif tool == "reference":
         import matchering
         from matchering.log import Code, ModuleError

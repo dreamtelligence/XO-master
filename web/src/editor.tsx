@@ -7,13 +7,33 @@ export function TransportTime({ clock }: { clock: PositionClock }) {
   return <output className="transport-time">{seconds(useSyncExternalStore(clock.subscribe, clock.current))}</output>
 }
 
+export function TimelineRuler({ duration, zoom, bars, barLength, downbeat }: {
+  duration: number; zoom: number; bars: boolean; barLength: number; downbeat: number;
+}) {
+  const divisions = 4 * zoom
+  const count = Math.max(0, Math.floor((duration - downbeat) / barLength) + 1)
+  const stride = 2 ** Math.ceil(Math.log2(Math.max(1, count / divisions)))
+  const ticks = bars
+    ? Array.from({ length: Math.ceil(count / stride) }, (_, index) => ({
+      time: downbeat + index * stride * barLength, label: String(index * stride + 1),
+    }))
+    : Array.from({ length: divisions + 1 }, (_, index) => {
+      const time = duration * index / divisions
+      return { time, label: seconds(time).slice(0, duration < divisions ? 7 : 5) }
+    })
+  return <div className="timeline-label"><span>{bars ? 'Takt' : 'Zeit'}</span><div className="timeline-ticks">
+    {ticks.map(({ time, label }) => <span key={time} style={{ left: `${time / duration * 100}%` }}
+      className={time <= duration * .04 ? 'at-start' : time >= duration * .96 ? 'at-end' : undefined}>{label}</span>)}
+  </div></div>
+}
+
 function Playhead({ clock, length, width }: { clock: PositionClock; length: number; width: number }) {
   const position = useSyncExternalStore(clock.subscribe, clock.current)
   return <span className="playhead" style={{ left: position / length * width }} />
 }
 
-export function Wave({ asset, length, position, offset = 0, region, beats = [], markers = [], onRegion, onSeek }: {
-  asset: Asset; length: number; position: PositionClock; offset?: number; region?: Region; beats?: number[]; markers?: Region[];
+export function Wave({ asset, length, position, offset = 0, region, beats, beatsPerBar, markers = [], onRegion, onSeek }: {
+  asset: Asset; length: number; position: PositionClock; offset?: number; region?: Region; beats: number[]; beatsPerBar: number; markers?: Region[];
   onRegion?: (region: Region) => void; onSeek: (seconds: number) => void;
 }) {
   const canvas = useRef<HTMLCanvasElement>(null)
@@ -22,6 +42,7 @@ export function Wave({ asset, length, position, offset = 0, region, beats = [], 
   const rate = asset.meta.rate!
   const samples = asset.meta.samples!
   const [width, setWidth] = useState(400)
+  const [dragPreview, setDragPreview] = useState<[number, number] | null>(null)
   const size = asset.meta.seconds ?? 0
   useEffect(() => {
     const observer = new ResizeObserver(entries => setWidth(Math.max(1, Math.floor(entries[0].contentRect.width))))
@@ -33,41 +54,68 @@ export function Wave({ asset, length, position, offset = 0, region, beats = [], 
     const view = canvas.current.getContext('2d')
     if (!view) return
     const density = Math.min(devicePixelRatio, 2)
+    const height = 124
     canvas.current.width = width * density
-    canvas.current.height = 60 * density
+    canvas.current.height = height * density
     view.scale(density, density)
-    view.fillStyle = '#f3eefb'
-    view.fillRect(0, 0, width, 60)
+    view.fillStyle = '#171722'
+    view.fillRect(0, 0, width, height)
     const w = size / length * width
     const start = offset / length * width
-    view.fillStyle = '#eae2f7'
-    view.fillRect(start, 0, w, 60)
-    if (region) {
-      view.fillStyle = '#d4c9f4'
-      view.fillRect(start + region.start / rate / length * width, 0, (region.end - region.start) / rate / length * width, 60)
+    const middle = height / 2
+    const hasSelection = region && (region.start > 0 || region.end < samples)
+    const from = region ? start + region.start / rate / length * width : 0
+    const to = region ? start + region.end / rate / length * width : 0
+    const color = getComputedStyle(canvas.current).getPropertyValue('--clip').trim()
+    view.fillStyle = '#252539'
+    view.fillRect(start, 0, w, height)
+    view.fillStyle = `${color}35`
+    view.fillRect(start, 0, w, 3)
+    if (hasSelection) {
+      view.fillStyle = '#503749'
+      view.fillRect(from, 0, to - from, height)
     }
-    view.fillStyle = '#6346a9'
+    view.fillStyle = '#ffffff18'
+    view.fillRect(0, middle, width, 1)
+    const beatPixels = (beats[1] - beats[0]) / length * width
+    for (const [index, beat] of beats.entries()) {
+      const bar = index % beatsPerBar === 0
+      if (!bar && beatPixels < 5) continue
+      if (bar && index > 0 && beatPixels * beatsPerBar < 2.5) continue
+      view.fillStyle = bar ? '#d5c4fb35' : '#d5c4fb17'
+      view.fillRect(beat / length * width, 0, 1, height)
+    }
     const peaks = asset.meta.peaks ?? []
-    for (let x = Math.max(0, Math.floor(start)); x < Math.min(width, start + w); x += 2) {
+    for (let x = Math.max(0, Math.ceil(start)); x < Math.min(width, start + w); x += 2) {
       const peak = peaks[Math.floor((x - start) / w * peaks.length)] || 0.015
-      view.fillRect(x, 30 - 26 * peak, 1.35, 52 * peak)
+      const magnitude = Math.max(1, (middle - 7) * Math.sqrt(peak))
+      view.fillStyle = hasSelection && x >= from && x <= to ? '#f4b494' : color
+      view.fillRect(x, middle - magnitude, 1.35, 2 * magnitude)
     }
-    view.fillStyle = '#a99ac7'
-    for (const beat of beats) view.fillRect(beat / length * width, 0, 0.8, 60)
-    view.fillStyle = '#a44072'
+    if (hasSelection) {
+      view.fillStyle = '#efa785bf'
+      view.fillRect(Math.max(0, from), 0, 1, height)
+      view.fillRect(Math.min(width - 1, to), 0, 1, height)
+    }
+    view.fillStyle = '#eda9d6'
     for (const marker of markers) {
-      view.fillRect(start + marker.start / rate / length * width, 3, 2, 54)
-      view.fillRect(start + marker.end / rate / length * width, 3, 1, 54)
+      view.fillRect(start + marker.start / rate / length * width, 3, 2, height - 6)
+      view.fillRect(start + marker.end / rate / length * width, 3, 1, height - 6)
     }
-  }, [asset, width, length, size, offset, region, rate, beats, markers])
+  }, [asset, width, length, size, offset, region, rate, samples, beats, beatsPerBar, markers])
 
   const get = (event: PointerEvent<HTMLCanvasElement>) => {
     const rect = event.currentTarget.getBoundingClientRect()
     return Math.max(0, Math.min(length, (event.clientX - rect.left) / rect.width * length))
   }
-  return <div className="wave">
+  return <div className="wave" data-role={asset.role}>
     <canvas ref={canvas} role="img" aria-label={`Wellenform für ${asset.name}, ${seconds(size)}`} onPointerDown={event => {
       drag.current = get(event); last.current = event.clientX; event.currentTarget.setPointerCapture(event.pointerId)
+    }} onPointerMove={event => {
+      if (onRegion && drag.current !== null && Math.abs(event.clientX - (last.current ?? event.clientX)) > 4) {
+        const to = get(event)
+        setDragPreview([Math.min(drag.current, to), Math.max(drag.current, to)])
+      }
     }} onPointerUp={event => {
       if (drag.current === null) return
       const from = drag.current, to = get(event)
@@ -77,7 +125,9 @@ export function Wave({ asset, length, position, offset = 0, region, beats = [], 
         onRegion({ start, end })
       } else onSeek(to)
       drag.current = null
-    }} onPointerCancel={() => { drag.current = null }} />
+      setDragPreview(null)
+    }} onLostPointerCapture={() => { drag.current = null; setDragPreview(null) }} />
+    {dragPreview && <span className="wave-selection" aria-hidden="true" style={{ left: `${dragPreview[0] / length * 100}%`, width: `${(dragPreview[1] - dragPreview[0]) / length * 100}%` }} />}
     <Playhead clock={position} length={length} width={width} />
   </div>
 }
@@ -138,7 +188,7 @@ export function RegionEditor({ project, asset, region, set, slices, setSlices, a
   }
   const display = (value: number) => Number((value / rate).toFixed(5))
   return <div className="region-panel">
-    <div className="inline section-heading"><h3>Auswahl</h3><button onClick={() => set({ start: 0, end: max })}>Ganze Datei</button></div>
+    <div className="inline section-heading"><div className="inline"><h3>Auswahl</h3><output className="region-length" aria-label="Auswahldauer">{seconds((region.end - region.start) / rate)}</output></div><button onClick={() => set({ start: 0, end: max })}>Ganze Datei</button></div>
     <div className="region-grid">
       <Num label="Start · s" value={display(region.start)} min={0} max={display(region.end - 1)} step={.001} onChange={value => change('start', value)} />
       <Num label="Ende · s" value={display(region.end)} min={display(region.start + 1)} max={display(max)} step={.001} onChange={value => change('end', value)} />

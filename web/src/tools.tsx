@@ -1,17 +1,20 @@
 import type { ReactNode } from 'react'
-import { audio, type Asset, type Capabilities, type Project, type Region, type Track } from './api'
+import { AudioLines, AudioWaveform, Disc3, Maximize2, Power, Waves } from 'lucide-react'
+import { Dial } from './controls'
+import { FxScope } from './fx'
+import { audio, keyName, midiHasNotes, pitchNames, type Asset, type Capabilities, type EffectStep, type Midi, type Project, type Region, type TonalKey, type Track } from './api'
 
 export const tools: Record<string, [string, string, string]> = {
   qa: ['Audio prüfen', 'Lautheit, True Peak und Stille für die ausgewählte Datei messen.', 'Audio prüfen'],
   separation: ['Stems trennen', 'Gesang, Schlagzeug, Bass und Begleitung als einzelne Projektspuren übernehmen.', 'Stems trennen'],
-  detect: ['Grid & Treffer erkennen', 'Beats oder mögliche Sample-Grenzen für dieses Audio vorschlagen.', 'Audio analysieren'],
+  detect: ['Grid & Treffer erkennen', 'Tempo, Tonart und mögliche Sample-Grenzen für dieses Audio vorschlagen.', 'Audio analysieren'],
   loop: ['Loops schneiden', 'Die Auswahl oder ganze Takte als WAV-Loop ablegen.', 'Loops erzeugen'],
   oneshot: ['One-Shots schneiden', 'Korrigierte Treffer als einzelne WAV-Dateien ablegen.', 'Samples erzeugen'],
-  stretch: ['Tempo & Tonhöhe', 'Audio mit Rubber Band bearbeiten. Passendes MIDI kann dieselbe Zeitabbildung übernehmen.', 'Tempo-Variante rendern'],
+  stretch: ['Tempo & Tonhöhe', 'Tempo und Tonhöhe unabhängig bearbeiten. Passendes MIDI kann dieselbe Transposition übernehmen.', 'Tempo-Variante rendern'],
   transcription: ['MuScriptor & Musikanalyse', 'Mehrinstrument-MIDI, Drums, Akkorde oder Beat-Grid auswerten.', 'Analyse starten'],
   basic_pitch: ['Basic Pitch', 'Noten und Pitch Bends aus einer möglichst einzelnen Instrumentenspur erkennen.', 'MIDI erstellen'],
   midi: ['MIDI bearbeiten', 'Notenliste, Takt und konstantes Anfangstempo als neue MIDI-Version schreiben.', 'MIDI rendern'],
-  effects: ['Effektkette', 'Geordnete Pedalboard-Effekte mit demselben DSP für Vorschau und Vollrender.', 'Variante rendern'],
+  effects: ['Effektkette', 'Baue deinen Sound aus Filtern, Band, Echo und Hall.', 'Ganzen Clip rendern'],
   mix: ['Remix-Mixer', 'Die markierten Spuren mit Clip-Grenzen, Gain, Panorama und Offset als Stereomix rendern.', 'Mix rendern'],
   mastering: ['Automatisches Mastering', 'Einen fertigen Mix mit der vorhandenen Mastering-Kette bearbeiten und messen.', 'Master rendern'],
   reference: ['Referenzmastering', 'Matchering passt den Mix an eine Referenzdatei aus dem Projekt an.', 'Referenzmaster rendern'],
@@ -47,9 +50,32 @@ export const effects: Record<string, Record<string, [number, number, number, str
   Limiter: { threshold_db: [-24, 0, -1, 'Schwelle · dB'], release_ms: [1, 500, 100, 'Release · ms'] },
   Reverb: { room_size: [0, 1, .4, 'Raumgröße'], wet_level: [0, 1, .25, 'Effektanteil'], dry_level: [0, 1, .75, 'Direktanteil'] },
   Delay: { delay_seconds: [.01, 2, .25, 'Verzögerung · s'], feedback: [0, .8, .25, 'Feedback'], mix: [0, 1, .25, 'Effektanteil'] },
+  ChowTape: { tape_drive: [0, 1, .54, 'Drive'], tape_saturation: [0, 1, .64, 'Sättigung'], dry_wet: [0, 100, 70, 'Mix · %'] },
+  ChowMatrix: { time_ms: [40, 1000, 375, 'Echozeit · ms'], feedback_percent: [0, 70, 40, 'Feedback · %'], wet: [-36, 0, -10, 'Effektpegel · dB'] },
+  DragonflyPlate: { wet_level: [0, 100, 27, 'Mix · %'], decay_s: [.1, 5, 1.35, 'Hallzeit · s'], predelay_ms: [0, 100, 18, 'Predelay · ms'] },
 }
-const effectName: Record<string, string> = { Gain: 'Gain', HighpassFilter: 'Hochpass', LowpassFilter: 'Tiefpass', PeakFilter: 'Parametrischer EQ', Compressor: 'Kompressor', NoiseGate: 'Noise Gate', Limiter: 'Limiter', Reverb: 'Hall', Delay: 'Delay' }
-type Effect = { effect: string; bypass?: boolean } & Record<string, number | string | boolean | undefined>
+export const effectName: Record<string, string> = { Gain: 'Gain', HighpassFilter: 'Hochpass', LowpassFilter: 'Tiefpass', PeakFilter: 'Parametrischer EQ', Compressor: 'Kompressor', NoiseGate: 'Noise Gate', Limiter: 'Limiter', Reverb: 'Hall', Delay: 'Delay' }
+export const pluginModules = {
+  ChowTape: { name: 'CHOW Tape', family: 'Band', glyph: Disc3 },
+  ChowMatrix: { name: 'CHOW Matrix', family: 'Echo', glyph: AudioWaveform },
+  DragonflyPlate: { name: 'Dragonfly Plate', family: 'Hall', glyph: Waves },
+} as const
+const defaultChain: EffectStep[] = [{ effect: 'Gain' }, { effect: 'Compressor' }]
+export function effectParameters(settings: Record<string, unknown>) {
+  const chain = (settings.chain as EffectStep[] | undefined) ?? defaultChain
+  const hasTail = chain.some(step => !step.bypass && (step.effect === 'ChowMatrix' || step.effect === 'DragonflyPlate'))
+  return { chain, tail: Number(settings.tail ?? (hasTail ? 2 : 0)) }
+}
+
+export function effectTitle(effect: string) {
+  return pluginModules[effect as keyof typeof pluginModules]?.name ?? effectName[effect] ?? effect
+}
+
+export function EffectDials({ step, change }: { step: EffectStep; change: (step: EffectStep) => void }) {
+  return <div className="dial-grid">{Object.entries(effects[step.effect] ?? {}).map(([key, [min, max, fallback, label]]) =>
+    <Dial key={key} label={label} min={min} max={max} step={.01} value={Number(step[key] ?? fallback)} live
+      onChange={value => change({ ...step, [key]: value })} />)}</div>
+}
 
 export function Num({ label, value, onChange, min, max, step = 1 }: { label: string; value: number; onChange: (value: number) => void; min?: number; max?: number; step?: number }) {
   return <label className="field"><span>{label}</span><input type="number" value={Number.isFinite(value) ? value : ''} min={min} max={max} step={step} onChange={event => { if (event.target.value !== '') onChange(Number(event.target.value)) }} /></label>
@@ -61,6 +87,10 @@ export function Check({ children, onChange, checked }: { children: ReactNode; on
 type Props = {
   tool: string; setTool: (tool: string) => void; settings: Record<string, unknown>; change: (key: string, value: unknown) => void;
   asset?: Asset; assets: Asset[]; selected: Asset[]; project: Project; caps?: Capabilities; region?: Region;
+  openSource?: () => void;
+  rack: { selected: number; select: (index: number) => void; running: boolean; read: () => number[][] | undefined;
+    expanded: boolean; expand: () => void; status: string; playback?: () => void; playing: boolean; render?: () => void };
+  sourceKey?: TonalKey; estimatedKey?: TonalKey; setSourceKey: (value?: TonalKey) => void;
   setRegion: (region: Region) => void; slices: Region[]; setSlices: (slices: Region[]) => void; setGrid: (bpm: number, downbeat?: number) => void;
   tracks: Record<string, Track>; setTrack: (id: string, track: Track) => void;
   run: (tool: string, inputs: string[], params: Record<string, unknown>, count?: number) => void; busy: boolean;
@@ -80,32 +110,58 @@ export function Inspector(p: Props) {
   const identicalReference = tool === 'reference' && refs.find(item => item.id === reference)?.hash === asset?.hash && Boolean(asset)
   const inputs = tool === 'generation' ? [] : usesMany ? (selected.length ? selected : asset ? [asset] : [])
     : asset ? tool === 'reference' && reference ? [asset, ...refs.filter(ref => ref.id === reference)] : [asset] : []
-  const chain = (settings.chain as Effect[] | undefined) ?? [{ effect: 'Gain' }, { effect: 'Compressor' }]
+  const { chain, tail } = effectParameters(settings)
+  const rackIndex = Math.min(p.rack.selected, chain.length - 1)
+  const rackStep = chain[rackIndex]
+  const replaceStep = (value: EffectStep) => change('chain', chain.map((item, index) => index === rackIndex ? value : item))
+  function addStep(effect: string) {
+    const previous = settings.chain == null && Object.hasOwn(pluginModules, effect) ? [] : chain
+    change('chain', [...previous, { effect }])
+    p.rack.select(previous.length)
+  }
+  const readyPlugins = p.caps?.effect_plugins ?? {}
+  const pluginMissing = tool === 'effects' && chain.some(step => !step.bypass && Object.hasOwn(pluginModules, step.effect) && !readyPlugins[step.effect])
   const needsAudio = tool !== 'midi' && tool !== 'generation'
-  const supported = tool === 'midi' ? asset?.role === 'midi' : tool === 'generation' ? str('prompt', '').trim().length > 0 : inputs.length > 0 && inputs.every(item => audio(item) || (tool === 'stretch' && item.role === 'midi')) && inputs.some(audio)
-  const disabled = p.busy || !!project.archived || !ready || !supported || (cloud.has(tool) && project.purpose === 'release') || (tool === 'reference' && (inputs.length !== 2 || identicalReference)) || (tool === 'cut' && !p.slices.length) || (tool === 'effects' && !chain.length)
+  const supported = tool === 'midi' ? asset?.role === 'midi' && midiHasNotes(settings.view as Midi | undefined)
+    : tool === 'generation' ? str('prompt', '').trim().length > 0
+    : inputs.length > 0 && inputs.every(item => audio(item) || (tool === 'stretch' && item.role === 'midi')) && inputs.some(audio)
+  const disabled = p.busy || !!project.archived || !ready || !supported || pluginMissing || (cloud.has(tool) && project.purpose === 'release') || (tool === 'reference' && (inputs.length !== 2 || identicalReference)) || (tool === 'cut' && !p.slices.length) || (tool === 'effects' && !chain.length)
   const rate = asset?.meta.rate || project.rate
   const duration = asset?.meta.samples || 0
+  const sourceKey = p.sourceKey ?? p.estimatedKey
+  const singleSource = audio(asset) && inputs[0]?.id === asset.id && inputs.filter(audio).length === 1
+  const pitch = num('pitch', 0)
+  const currentTonic = sourceKey && Number.isInteger(pitch) ? (sourceKey.tonic + pitch + 12) % 12 : ''
+  const resultOnly = !supported && tool !== 'generation' && (asset?.role === 'analysis'
+    || (asset?.role === 'midi' && !asset.meta.midi?.tracks?.length))
+  const toolSelect = <label className="field tool-select"><span>Werkzeug</span><select value={tool} onChange={event => p.setTool(event.target.value)}>{categories.map(([name, ids]) => <optgroup key={name} label={name}>{ids.map(id => <option key={id} value={id}>{tools[id][0]}</option>)}</optgroup>)}</select></label>
+  if (resultOnly) return <div className="inspector-content">{toolSelect}
+    <p className="hint">{asset?.role === 'analysis' ? 'Die Auswertung steht auf der Arbeitsfläche.' : 'Für den Noteneditor wähle eine MIDI-Datei mit Noten.'}</p>
+    {p.openSource && <button onClick={p.openSource}>Quelldatei öffnen</button>}
+  </div>
   const options = (key: string, label: string, fallback: string, choices: [string, string][]) =>
     <label className="field"><span>{label}</span><select value={str(key, fallback)} onChange={event => change(key, event.target.value)}>
       {choices.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
     </select></label>
   const field = (key: string, label: string, fallback: number, min: number, max: number, step = 1) =>
     <Num label={label} value={num(key, fallback)} min={min} max={max} step={step} onChange={value => change(key, value)} />
+  const dial = (key: string, label: string, fallback: number, min: number, max: number, step = 1) =>
+    <Dial label={label} value={num(key, fallback)} min={min} max={max} step={step} onChange={value => change(key, value)} />
   const check = (key: string, label: string, fallback = false) =>
     <Check checked={boolean(key, fallback)} onChange={value => change(key, value)}>{label}</Check>
   const checks = (key: string, defaults: string[], items: [string, string][]) => {
     const current = (settings[key] as string[] | undefined) ?? defaults
     return <div className="check-grid">{items.map(([id, label]) => <Check key={id} checked={current.includes(id)} onChange={enabled => change(key, enabled ? [...current, id] : current.filter(item => item !== id))}>{label}</Check>)}</div>
   }
-  function submit(preview = false) {
+  function submit(preview = false, keepTempo = false) {
     const params: Record<string, unknown> = { ...settings }
     for (const key of ['reference', 'count', 'snap', 'bars', 'mode_selection', 'fixedSeed']) delete params[key]
     if (tool === 'generation' && params.seed === undefined) params.seed = null
-    if (tool === 'effects') params.chain = chain
+    if (tool === 'effects') Object.assign(params, { chain, tail })
     if (tool === 'stretch') {
       params.source_bpm = num('source_bpm', asset?.meta.bpm ?? project.bpm)
-      params.target_bpm = num('target_bpm', project.bpm)
+      params.target_bpm = keepTempo ? params.source_bpm : num('target_bpm', project.bpm)
+      if (singleSource && sourceKey) params.source_key = sourceKey
     }
     if (tool === 'cut') params.cuts = p.slices
     if (tool === 'mix') params.tracks = Object.fromEntries(inputs.map(item => [item.id, p.tracks[item.id] || {}]))
@@ -132,24 +188,62 @@ export function Inspector(p: Props) {
   const controls: Record<string, ReactNode> = {
     qa: <p className="hint">EBU R128 · Ergebnis enthält LUFS, LRA und True Peak. Messwerte erscheinen beim Analyse-Asset.</p>,
     separation: <>{checks('stems', ['vocals', 'drums', 'bass', 'other'], [['vocals', 'Gesang'], ['drums', 'Drums'], ['bass', 'Bass'], ['other', 'Begleitung'], ['instrumental', 'Instrumental']])}{check('tta', 'Zusätzliche Modellläufe (TTA)')}{check('coherent', 'Zusammengehörige SCNet-Gruppe ohne Instrumental')}<p className="hint">Die vorhandene Modellkombination verwendet Mel-Band für Gesang und SCNet für weitere Spuren.</p></>,
-    detect: <>{options('mode', 'Analyse', 'loop', [['loop', 'Beat-Grid'], ['oneshot', 'Grid + Anschläge']])}
+    detect: <>{options('mode', 'Analyse', 'loop', [['loop', 'Beat-Grid + Tonart'], ['oneshot', 'Grid + Anschläge + Tonart'], ['key', 'Nur Tonart']])}
       {str('mode', 'loop') === 'oneshot' && <div className="field-grid">{field('sensitivity', 'Schwelle', .07, .01, 1, .01)}{field('spacing', 'Abstand · ms', 100, 25, 2000)}{field('minimum', 'Mindestlänge · ms', 30, 10, 2000)}{field('pre', 'Vorlauf · ms', 8, 0, 100)}{field('tail', 'Ausklang · ms', 350, 30, 5000)}</div>}</>,
     loop: <>{options('bars', 'Looplänge', '0', [['0', 'Freie Region'], ...[1, 2, 4, 8, 16].map(n => [String(n), `${n} Takte ab Auswahlstart`] as [string, string])])}
-      <div className="field-grid">{field('fade_in', 'Fade in · ms', 0, 0, 500)}{field('fade_out', 'Fade out · ms', 0, 0, 500)}</div>{check('snap_zero', 'An nächsten Nulldurchgang setzen')}</>,
-    oneshot: <div className="field-grid">{field('fade_in', 'Fade in · ms', 0, 0, 500)}{field('fade_out', 'Fade out · ms', 0, 0, 500)}{check('snap_zero', 'An nächsten Nulldurchgang setzen')}</div>,
-    stretch: <><div className="field-grid">{field('source_bpm', 'Quell-BPM', asset?.meta.bpm ?? project.bpm, 30, 300, .01)}{field('target_bpm', 'Ziel-BPM', project.bpm, 30, 300, .01)}{field('pitch', 'Halbtöne', 0, -12, 12, .01)}</div>{check('formant', 'Formanten erhalten')}</>,
+      <div className="dial-grid">{dial('fade_in', 'Fade in · ms', 0, 0, 500)}{dial('fade_out', 'Fade out · ms', 0, 0, 500)}</div>{check('snap_zero', 'An nächsten Nulldurchgang setzen')}</>,
+    oneshot: <><div className="dial-grid">{dial('fade_in', 'Fade in · ms', 0, 0, 500)}{dial('fade_out', 'Fade out · ms', 0, 0, 500)}</div>{check('snap_zero', 'An nächsten Nulldurchgang setzen')}</>,
+    stretch: <>
+      {singleSource && <div className="effect key-controls">
+        <label className="field"><span>Quelltonart</span><select value={p.sourceKey ? `${p.sourceKey.mode}:${p.sourceKey.tonic}` : ''}
+          onChange={event => { const [mode, tonic] = event.target.value.split(':'); p.setSourceKey(tonic === undefined ? undefined : { tonic: Number(tonic), mode: mode as TonalKey['mode'] }) }}>
+          <option value="">{p.estimatedKey ? `Vorschlag · ${keyName(p.estimatedKey)}` : 'Tonart wählen …'}</option>
+          {(['major', 'minor'] as const).flatMap(mode => pitchNames.map((_, tonic) => <option key={`${mode}:${tonic}`} value={`${mode}:${tonic}`}>{keyName({ mode, tonic })}</option>))}
+        </select></label>
+        {sourceKey && <><label className="field"><span>Zieltonart</span><select value={currentTonic} onChange={event => change('pitch', (Number(event.target.value) - sourceKey.tonic + 18) % 12 - 6)}>
+          {currentTonic === '' && <option value="" disabled>Feinstimmung aktiv</option>}
+          {pitchNames.map((_, tonic) => <option key={tonic} value={tonic}>{keyName({ tonic, mode: sourceKey.mode })}</option>)}
+        </select></label><small>Dur oder Moll bleibt bei der Transposition erhalten.</small><button disabled={disabled || currentTonic === '' || !pitch} onClick={() => submit(false, true)}>Tonart rendern · Tempo beibehalten</button></>}
+      </div>}
+      {field('source_bpm', 'Quell-BPM', asset?.meta.bpm ?? project.bpm, 30, 300, .01)}<div className="dial-grid">{dial('target_bpm', 'Zieltempo · BPM', project.bpm, 30, 300, .01)}{dial('pitch', 'Tonhöhe · HT', 0, -12, 12, .01)}</div>{check('formant', 'Formanten erhalten')}</>,
     transcription: checks('tasks', ['melody', 'drums', 'chords', 'beat'], [['melody', 'Melodie / Instrumente'], ['drums', 'Drums'], ['chords', 'Akkorde / Tonart'], ['beat', 'Beat / Tempo']]),
     basic_pitch: <p className="hint">MIDI bezieht sich auf die gewählte Audioauswahl. Am besten eine isolierte Bass- oder Melodiespur verwenden.</p>,
     midi: <div className="field-grid">{field('quantize', 'Quantisierung (0–1)', 0, 0, 1, .05)}{field('transpose', 'Halbtöne', 0, -12, 12)}{field('clip_start', 'MIDI-Start · s', 0, 0, 1800, .01)}{field('clip_end', 'MIDI-Ende · s', 1800, 0, 1800, .01)}</div>,
-    effects: <><div className="chain">{chain.map((entry, index) => {
-      const replace = (value: Effect) => change('chain', chain.map((item, at) => at === index ? value : item))
-      const move = (direction: number) => { const copy = [...chain]; [copy[index], copy[index + direction]] = [copy[index + direction], copy[index]]; change('chain', copy) }
-      return <div className="effect" key={index}><div className="inline"><strong>{effectName[entry.effect]}</strong><button type="button" className="plain" aria-label="Effekt nach oben" disabled={!index} onClick={() => move(-1)}>↑</button><button type="button" className="plain" aria-label="Effekt nach unten" disabled={index === chain.length - 1} onClick={() => move(1)}>↓</button><button type="button" className="plain" aria-label="Effekt entfernen" onClick={() => change('chain', chain.filter((_, at) => at !== index))}>×</button></div>
-        <div className="field-grid">{Object.entries(effects[entry.effect] || {}).map(([key, [min, max, fallback, label]]) => <Num key={key} label={label} value={Number(entry[key] ?? fallback)} min={min} max={max} step={.01} onChange={value => replace({ ...entry, [key]: value })} />)}</div>
-        <div className="inline"><Check checked={!!entry.bypass} onChange={value => replace({ ...entry, bypass: value })}>Bypass</Check><button type="button" className="plain" onClick={() => replace({ effect: entry.effect })}>Reset</button></div>
-      </div>
-    })}</div><label className="field"><span>Effekt hinzufügen</span><select value="" onChange={event => change('chain', [...chain, { effect: event.target.value }])} disabled={chain.length >= 12}><option value="" disabled>Effekt wählen</option>{Object.entries(effectName).map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></label>
-      {field('tail', 'Ausklang · s', 0, 0, 5, .1)}</>,
+    effects: <>
+      {rackStep && <section className="rack-surface fx-module" data-effect={rackStep.effect} aria-label="Effektrack">
+        <div className="rack-heading"><strong>{effectTitle(rackStep.effect)}</strong>
+          <button className="plain" type="button" aria-label="Display vergrößern" title="Display vergrößern" aria-expanded={p.rack.expanded} onClick={p.rack.expand}><Maximize2 size={15} /></button>
+        </div>
+        <FxScope running={p.rack.running} read={p.rack.read} />
+        <EffectDials key={rackIndex + rackStep.effect} step={rackStep} change={replaceStep} />
+        <div className="rack-preview"><button type="button" className="primary" disabled={!p.rack.playback} onClick={p.rack.playback}>{p.rack.playing ? 'Live pausieren' : 'Live hören'}</button>
+          <small role="status">{p.rack.status}</small></div>
+      </section>}
+      <div className="rack-chain" role="group" aria-label="Signalweg">{chain.map((entry, index) => {
+        const Glyph = pluginModules[entry.effect as keyof typeof pluginModules]?.glyph ?? AudioLines
+        const title = effectTitle(entry.effect)
+        function move(direction: number) {
+          const destination = index + direction
+          const copy = [...chain]
+          ;[copy[index], copy[destination]] = [copy[destination], copy[index]]
+          change('chain', copy)
+          p.rack.select(index === rackIndex ? destination : destination === rackIndex ? index : rackIndex)
+        }
+        return <div className="rack-step fx-module" data-effect={entry.effect} data-bypass={Boolean(entry.bypass)} key={index}>
+          <button className="rack-step-name" type="button" aria-pressed={index === rackIndex} onClick={() => p.rack.select(index)}><Glyph size={15} />{title}</button>
+          <button className="plain" aria-label={`Bypass ${title}`} aria-pressed={Boolean(entry.bypass)} onClick={() => change('chain', chain.map((item, at) => at === index ? { ...entry, bypass: !entry.bypass } : item))}><Power size={14} /></button>
+          <button className="plain" aria-label={`${title} nach oben`} disabled={!index} onClick={() => move(-1)}>↑</button>
+          <button className="plain" aria-label={`${title} nach unten`} disabled={index === chain.length - 1} onClick={() => move(1)}>↓</button>
+          <button className="plain" aria-label={`${title} entfernen`} onClick={() => { change('chain', chain.filter((_, at) => at !== index)); if (index < rackIndex) p.rack.select(rackIndex - 1) }}>×</button>
+        </div>
+      })}</div>
+      <label className="field"><span>Effekt hinzufügen</span><select value="" onChange={event => addStep(event.target.value)} disabled={chain.length >= 12 || !!project.archived}>
+        <option value="" disabled>Effekt wählen</option>
+        <optgroup label="VST3">{Object.entries(pluginModules).map(([id, module]) => <option key={id} value={id} disabled={!readyPlugins[id]}>{module.name}</option>)}</optgroup>
+        <optgroup label="Studio-Effekte">{Object.entries(effectName).map(([id, label]) => <option key={id} value={id}>{label}</option>)}</optgroup>
+      </select></label>
+      <div className="inline">{field('tail', 'WAV-Ausklang · s', tail, 0, 5, .1)}{rackStep && <button type="button" className="plain" onClick={() => replaceStep({ effect: rackStep.effect, bypass: rackStep.bypass })}>Zurücksetzen</button>}</div>
+    </>,
     mix: <div className="chain">{inputs.filter(audio).map(item => {
       const track = p.tracks[item.id] ?? { gain: 0, pan: 0, offset: 0, mute: false, solo: false }
       const set = (key: keyof Track, value: number | boolean) => p.setTrack(item.id, { ...track, [key]: value })
@@ -163,7 +257,7 @@ export function Inspector(p: Props) {
       </div></div>
     })}</div>,
     mastering: <>{options('intensity', 'Intensität', 'medium', [['low', 'Sanft'], ['medium', 'Mittel'], ['high', 'Stark']])}
-      <div className="field-grid">{field('lufs', 'Ziel · LUFS', -14, -30, -8, .1)}{field('true_peak', 'Grenze · dBTP', -1, -6, -.1, .1)}</div></>,
+      <div className="dial-grid">{dial('lufs', 'Lautheit · LUFS', -14, -30, -8, .1)}{dial('true_peak', 'True Peak · dBTP', -1, -6, -.1, .1)}</div></>,
     reference: <>{options('reference', 'Referenz im Projekt', defaultReference?.id || '', refs.length ? refs.map(item => [item.id, item.name]) : [['', 'Referenzdatei importieren']])}</>,
     enhancement: <>{check('suggestions', 'Transkript und Schnittvorschläge anfragen')}{check('disturbances', 'Störgeräusche zur Prüfung markieren (AST)')}</>,
     deepfilter: <p className="hint">Denoising mit Delay-Kompensation. Die Originaldatei bleibt im Projekt.</p>,
@@ -177,12 +271,14 @@ export function Inspector(p: Props) {
   }
 
   return <div className="inspector-content">
-    <label className="field tool-select"><span>Werkzeug</span><select value={tool} onChange={event => p.setTool(event.target.value)}>{categories.map(([name, ids]) => <optgroup key={name} label={name}>{ids.map(id => <option key={id} value={id}>{tools[id][0]}</option>)}</optgroup>)}</select></label>
-    <div className="tool-heading"><span className={cloud.has(tool) ? 'mode cloud' : 'mode'}>{tool === 'audiosr' ? 'Privates Modal · Experiment' : cloud.has(tool) ? 'Privates Modal' : 'Lokal'}</span><h2>{title}</h2><p>{description}</p></div>
+    {toolSelect}
+    <div className="tool-heading"><span className={cloud.has(tool) ? 'mode cloud' : 'mode'}>{tool === 'audiosr' ? 'Privates Modal · Experiment' : cloud.has(tool) ? 'Privates Modal' : p.caps?.online ? 'Workspace-Server' : 'Lokal'}</span><h2>{title}</h2><p>{description}</p></div>
     {needsAudio && tool !== 'mix' && <p className="input-chip">{inputs.length > 1 ? `${inputs.length} Eingaben` : asset ? asset.name : 'Wähle ein Audio-Asset'}</p>}
     <section className="controls">{controls[tool]}</section>
     <div className="render-actions">
-      {['effects', 'stretch', 'deepfilter', 'rnnoise'].includes(tool) && <button disabled={disabled || !region || (tool === 'stretch' && inputs.length > 1)} onClick={() => submit(true)}>Auswahlvorschau rendern</button>}
+      {pluginMissing && <p className="notice">Ein VST3 fehlt lokal. Du kannst das Modul im Rack auf Bypass setzen.</p>}
+      {tool === 'effects' && <button disabled={disabled || !p.rack.render} onClick={p.rack.render}>Ausschnitt als WAV speichern</button>}
+      {['stretch', 'deepfilter', 'rnnoise'].includes(tool) && <button disabled={disabled || !region || (tool === 'stretch' && inputs.length > 1)} onClick={() => submit(true)}>Auswahlvorschau rendern</button>}
       <button className="primary" disabled={disabled} onClick={() => submit(tool === 'audiosr')}>{action}</button>
       {disabled && !p.busy && <p className="hint">{project.archived ? 'Aktiviere das Projekt zuerst wieder.' : !ready ? 'Diese Engine ist in der lokalen Installation noch nicht eingerichtet.' : cloud.has(tool) && project.purpose === 'release' ? 'Für Veröffentlichungsprojekte ist dieses Modell hier nicht freigegeben.' : identicalReference ? 'Mix und Referenz enthalten dasselbe Audio. Wähle eine andere Referenzspur.' : tool === 'reference' && inputs.length !== 2 ? 'Wähle einen Mix und importiere eine Referenz.' : tool === 'cut' ? 'Füge mindestens einen bestätigten Schnitt hinzu.' : tool === 'effects' && !chain.length ? 'Füge mindestens einen Effekt hinzu.' : tool === 'generation' ? 'Gib einen Prompt ein.' : 'Wähle passendes Projektmaterial.'}</p>}
     </div>

@@ -104,3 +104,11 @@ pyAudioAnalysis-main/
 .modal.toml
 modal-private*.json
 *.credentials.json
+
+# Keep deployment credentials, real routing and generated media local
+.env.*
+!.env.example
+artist-workspace-online-login.txt
+model-workers.json
+/hosting/artist-workspace/vercel.json
+/music-workspace/

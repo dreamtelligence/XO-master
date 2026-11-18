@@ -1,0 +1,62 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "routes": [
+    {
+      "src": "/(.*)",
+      "has": [
+        {
+          "type": "host",
+          "value": "studio\\.example\\.org"
+        },
+        {
+          "type": "header",
+          "key": "origin",
+          "value": "https://studio\\.example\\.org"
+        }
+      ],
+      "dest": "https://your-workspace--artist-workspace-online.eu-west.modal.run/$1",
+      "transforms": [
+        {
+          "type": "request.headers",
+          "op": "set",
+          "target": {
+            "key": "origin"
+          },
+          "args": "https://your-workspace--artist-workspace-online.eu-west.modal.run"
+        }
+      ]
+    },
+    {
+      "src": "/(.*)",
+      "has": [
+        {
+          "type": "host",
+          "value": "studio\\.example\\.org"
+        }
+      ],
+      "missing": [
+        {
+          "type": "header",
+          "key": "origin"
+        }
+      ],
+      "dest": "https://your-workspace--artist-workspace-online.eu-west.modal.run/$1"
+    },
+    {
+      "src": "/(.*)",
+      "has": [
+        {
+          "type": "host",
+          "value": "studio\\.example\\.org"
+        }
+      ],
+      "status": 403,
+      "dest": "/404.html"
+    },
+    {
+      "src": "/(.*)",
+      "status": 404,
+      "dest": "/404.html"
+    }
+  ]
+}

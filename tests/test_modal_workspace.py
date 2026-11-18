@@ -142,7 +142,7 @@ class WorkspaceRoutes(unittest.TestCase):
             self.calls.append(args)
             return types.SimpleNamespace(object_id="fc-submitted")
 
-        self.ws.register(web, "transcription", 50 * 1024 * 1024, types.SimpleNamespace(spawn=spawn),
+        self.ws.register(web, "transcription", self.ws.TRACK_MAX_BYTES, types.SimpleNamespace(spawn=spawn),
                          lambda job_id, options: (job_id, options), result)
         self.api = TestClient(web)
         self.job = str(uuid.uuid4())
@@ -156,6 +156,15 @@ class WorkspaceRoutes(unittest.TestCase):
         self.sha = self.ws.digest(self.data)
         self.payload = {"size": len(self.data), "sha256": self.sha, "chunks": [self.sha],
                         "options": {"melody": True, "drums": False, "chords": False, "beat": False}}
+
+    def test_full_track_passes_size_validation(self):
+        chunk_size = self.ws.CHUNK_SIZE
+        # The worker reaches the missing-parts check for a 6:45 stereo track.
+        for size, status in ((405 * 44100 * 2 * 3 + 44, 409), (self.ws.TRACK_MAX_BYTES + 1, 400)):
+            chunks = [self.sha] * ((size + chunk_size - 1) // chunk_size)
+            payload = self.payload | {"size": size, "chunks": chunks}
+            self.assertEqual(self.api.post(self.route, json=payload).status_code, status)
+        self.assertEqual(self.calls, [])
 
     def test_stage_conflicts_and_bad_body(self):
         self.assertEqual(self.api.post(self.route, json=self.payload).status_code, 409)

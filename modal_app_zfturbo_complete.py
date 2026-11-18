@@ -673,7 +673,7 @@ def create_fastapi_app():
         return {"status": "ok"}
 
     
-    workspace.register(web_app, "separation", 100 * 1024 * 1024, bs_roformer_separate_audio,
+    workspace.register(web_app, "separation", workspace.TRACK_MAX_BYTES, bs_roformer_separate_audio,
                        lambda job_id, o: (job_id, f"{job_id}.wav", job_id, o["selected_stems"], o["use_tta"],
                               o["extract_instrumental"], o["coherent"]), status)
     return web_app
