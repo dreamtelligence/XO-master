@@ -1,3 +1,5 @@
+> Für den aktuellen privaten Artist Workspace siehe [Betrieb und Start](ARTIST_WORKSPACE.md) und [Prüfbericht](verification/2026-11-18-artist-workspace.md). Die folgenden kommerziellen Informationen sind historisch.
+
 # 🏗️ System Architecture
 
 This document provides a comprehensive overview of the AI Music Studio Platform architecture, including system design decisions, data flow, and technical implementation details.

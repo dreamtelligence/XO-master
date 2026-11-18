@@ -1,0 +1,8 @@
+{
+  "tracks": 4,
+  "sample_length": 553500,
+  "rate": 48000,
+  "midi_bpm": 128,
+  "cancellation": "cancelled",
+  "call_id_present": true
+}

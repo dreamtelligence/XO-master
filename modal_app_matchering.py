@@ -6,6 +6,7 @@ Professional Audio Mastering with Reference Matching
 """
 
 import modal
+import modal_workspace as workspace
 import os
 from pathlib import Path
 import tempfile
@@ -54,7 +55,7 @@ matchering_image = modal.Image.debian_slim(python_version="3.11").apt_install([
     # Additional audio processing
     "pydub>=0.25.0",
     "mutagen>=1.45.0"
-])
+]).add_local_python_source("modal_workspace")
 
 def save_job_status(job_id: str, status_data: dict):
     """Save job status to volume for persistence"""
@@ -72,7 +73,7 @@ def save_job_status(job_id: str, status_data: dict):
     image=matchering_image,
     timeout=900,  # 15 minutes should be enough for mastering
     memory=8192,  # 8GB memory for audio processing
-    volumes={storage_path: volume},
+    volumes={storage_path: volume, workspace.STAGING_PATH: workspace.staging},
     scaledown_window=60
 )
 def automatic_master_audio(
@@ -107,7 +108,8 @@ def automatic_master_audio(
         
         # Save input file
         target_file = job_dir / f"target_{target_filename}"
-        target_file.write_bytes(target_audio_data)
+        if not workspace.load_input(target_audio_data, target_file, "mastering", job_id):
+            return {"cancelled": True}
         
         output_dir = job_dir / "output"
         output_dir.mkdir(exist_ok=True)
@@ -997,11 +999,14 @@ def create_matchering_app():
         """Handle CORS preflight requests"""
         return {"status": "ok"}
     
+    workspace.register(web_app, "mastering", 50 * 1024 * 1024, automatic_master_audio,
+                       lambda job_id, o: (job_id, f"{job_id}.wav", job_id, o["mastering_intensity"],
+                              o["output_formats"].split(","), o["bass_mono_making"], True, o["lufs_targeting"]), mastering_status)
     return web_app
 
 # Deploy FastAPI app using Modal's ASGI pattern
-@app.function(image=matchering_image, volumes={storage_path: volume})
-@modal.asgi_app()
+@app.function(image=matchering_image, volumes={storage_path: volume, workspace.STAGING_PATH: workspace.staging})
+@modal.asgi_app(requires_proxy_auth=True)
 def matchering_app():
     return create_matchering_app()
 

@@ -1,0 +1,44 @@
+# Open-Source-Ergänzungen für die Audiokette
+
+Stand: 18.11.2026. Recherche und Integrationsvorschläge; keine Installation, Implementierung, Inferenz oder Änderung am privaten Modal-Zugang.
+
+## Empfehlung
+
+Zuerst die vorhandenen Stems in direkt nutzbare Ergebnisse für Ableton/Logic verwandeln: Loop-/Sample-Export und ein messbarer Vorher-/Nachher-Check. Danach Tempo-/Tonhöhenanpassung. Ein weiteres Rausch- oder Restaurationsmodell erweitert die bestehende Kette weniger eindeutig.
+
+| Priorität | Baustein | Konkreter Zusatznutzen / Position in der Kette | Einordnung |
+| --- | --- | --- | --- |
+| 1 | **Loop-/Sample-Export mit vorhandener librosa** | Nach der Stem-Trennung: Drum-Stem → Anschläge erkennen → einzelne Treffer oder taktweise Ausschnitte als WAV exportieren. Beat-Zeitpunkte aus der vorhandenen Analyse wiederverwenden. | Neue Produktfunktion auf vorhandener Bibliothek; kein weiteres Modell nötig. |
+| 1 | **Qualitätscheck mit vorhandenem FFmpeg / pyloudnorm** | Eingang und Ergebnis auf Lautheit, Dynamikumfang, Spitzen, Stille und technische Auffälligkeiten vergleichen. Im Exportbericht und bei lautheitsangepasstem A/B-Vergleich sichtbar machen. | Analyse-/Berichtsweg ergänzen; Mastering/Enhancement nutzen Teile der Bibliotheken bereits. |
+| 2 | **Rubber Band** | Einzelne Stems oder Loops auf Projekt-BPM bringen oder transponieren. Vor Effekten/Mastering einsetzen. | Neue Bearbeitungsfunktion; Lizenz für die beabsichtigte Verteilung bewusst auswählen. |
+| 2 | **Matchering als Referenzmodus** | Eigener Mix + Referenztrack → Mastering an deren Pegel, Frequenzbalance und Stereobreite orientieren. | Trotz des bestehenden Modal-Appnamens ist diese Bibliothek aktuell nicht eingebunden. |
+| 3 | **Basic Pitch** | Nach der Stem-Trennung einen zweiten Audio-zu-MIDI-Weg für Bass/Melodie anbieten und mit MuScriptor vergleichen. | Kein Ersatzversprechen für komplette Mehrinstrument-Transkription. |
+| Optional | **Pedalboard besser zugänglich machen** | Vorhandene Effekte als bedienbare Kette je Stem: beispielsweise EQ → Kompressor → Limiter, optional Hall/Delay. | Pedalboard ist bereits integriert; neuer Nutzen wäre Bedienung und Verkettung. |
+| Optional | **DeepFilterNet / RNNoise** | Für Sprachdateien eine alternative schlanke Rauschunterdrückung vor Schnitt/Normalisierung anbieten. | Überschneidung mit vorhandenem MossFormer; erst an repräsentativen Sprachclips vergleichen. |
+| Experiment | **AudioSR** | Bei bandbegrenztem Material optional hohe Frequenzanteile ergänzen, anschließend kritisch A/B hören. | Generative Bandbreitenerweiterung, keine Rekonstruktion mit Originalgarantie und kein pauschaler MP3-Reparierer. |
+
+## Belege und Grenzen
+
+**librosa:** `onset_detect` erkennt Anschläge; die dokumentierte Backtracking-Funktion ist ausdrücklich für Slice-Punkte gedacht. `segment` bietet strukturelle Segmentierung, Chroma-Funktionen liefern harmonische Merkmale. Daraus lässt sich ein Sample-/Loop-Export bauen; die Bibliothek liefert keine garantierten fertigen Sample-Packs. Grenzen an Nullstellen, kurze Fades, Beat-Ausrichtung und eine Hörkontrolle gehören zur Exportfunktion. Lizenz: ISC, keine Modellgewichte für diese DSP-Funktionen. Quellen: [Onsets](https://github.com/librosa/librosa/blob/main/librosa/onset.py), [Segmentierung](https://github.com/librosa/librosa/blob/main/librosa/segment.py), [Chroma](https://github.com/librosa/librosa/blob/main/librosa/feature/spectral.py), [ISC-Lizenz](https://github.com/librosa/librosa/blob/main/LICENSE.md).
+
+**FFmpeg / pyloudnorm:** FFmpeg dokumentiert `loudnorm`, `ebur128`, `astats` und `silencedetect`; daraus können Lautheit/LRA/True-Peak bzw. Signalstatistiken und Stille ausgewertet werden. Diese Werte sind keine Beurteilung der musikalischen Qualität. Ein A/B-Vergleich sollte beide Versionen auf vergleichbare Abhörlautheit bringen, damit bloße Pegelunterschiede das Urteil nicht dominieren. FFmpeg-Lizenzumfang hängt von Build-Optionen/Bibliotheken ab; deshalb keine pauschale Lizenzfreigabe aussprechen. Quellen: [Filter](https://ffmpeg.org/ffmpeg-filters.html#loudnorm), [EBU-R128](https://ffmpeg.org/ffmpeg-filters.html#ebur128), [FFmpeg-Lizenzhinweise](https://ffmpeg.org/legal.html).
+
+**Rubber Band:** Tempo und Tonhöhe lassen sich unabhängig verändern; C++-Bibliothek und CLI sind vorhanden. Die offizielle Seite nennt GPL und verlangt für Verteilung in einer proprietären kommerziellen Anwendung eine kommerzielle Lizenz. Das ist eine Aussage des Anbieters zur Verteilung, keine pauschale Bewertung unserer privaten Servernutzung. Quelle: [Rubber Band](https://breakfastquay.com/rubberband/).
+
+**Matchering:** Das offizielle Projekt verarbeitet Target und Reference und gleicht laut README RMS, Frequenzgang, Spitzen und Stereobreite an. Im lokalen `modal_app_matchering.py` fehlen Installation/Import und `mg.process`; `automatic_master_audio` verwendet eine eigene Pedalboard-/SciPy-Kette ohne Referenz. Ein zusätzlicher Referenzmodus wäre deshalb eine neue Fähigkeit. Die Bibliothek steht unter GPLv3. Das ist kein belegter Qualitätsgewinn gegenüber dem vorhandenen automatischen Mastering; dafür sind passende Referenzen und lautheitsangepasste Hörvergleiche nötig. Quellen: [Matchering](https://github.com/sergree/matchering), [Lizenz](https://github.com/sergree/matchering/blob/master/LICENSE); lokaler Code: `modal_app_matchering.py`.
+
+**Basic Pitch:** Spotify beschreibt MIDI-Ausgabe einschließlich Pitch-Bends und polyphone Instrumente; ausdrücklich beste Ergebnisse bei einem Instrument auf einmal. Deshalb hinter die Stem-Trennung setzen und gegen die vorhandene MuScriptor-Ausgabe prüfen. Im offiziellen Repository liegen mehrere Modellformate; die Repository-Lizenz ist Apache-2.0. Paket-/Runtime-Version und ausgewählte Modellartefakte vor einer Integration konkret pinnen. Quellen: [README und Modell-Runtimes](https://github.com/spotify/basic-pitch), [Lizenz](https://github.com/spotify/basic-pitch/blob/main/LICENSE).
+
+**Pedalboard:** Effekte und VST3-Hosting sind dokumentiert, Repository-Lizenz GPL-3.0. Einzelne fremde Plug-ins bringen eigene Lizenz- und Plattformbedingungen mit; Linux-Modal kann keine beliebigen macOS-Audio-Units laden. Im aktuellen Projekt sind Pedalboard, librosa und pyloudnorm bereits in Mastering/Enhancement vorhanden. Quellen: [Pedalboard](https://github.com/spotify/pedalboard), [Kompatibilitätsliste](https://github.com/spotify/pedalboard/blob/master/COMPATIBILITY.md); lokaler Code: `modal_app_matchering.py`, `modal_app_enhancement.py`.
+
+**DeepFilterNet / RNNoise:** DeepFilterNet bietet Rust-/CLI- und Python-Wege für 48-kHz-Sprachrauschunterdrückung; der PyTorch-Weg kann auch GPU verwenden. Der Maintainer hat mit Commit `7b14b89` ausdrücklich bestätigt, dass **Code und Modellgewichte** im Repository unter MIT oder Apache-2.0 stehen. RNNoise ist eine C-Bibliothek für Sprachrauschunterdrückung, BSD-3-Clause; das Demoformat ist mono, 48-kHz-Raw-PCM. Die Lizenz konkret heruntergeladener RNNoise-Modellartefakte bleibt separat zu erfassen. Ein zusätzlicher CPU-Weg wäre ein Vergleichskandidat, kein belegter Qualitäts-/Kostenvorteil gegenüber unserem MossFormer. Quellen: [DeepFilterNet](https://github.com/Rikorose/DeepFilterNet), [Lizenzklarstellung inklusive Gewichten](https://github.com/Rikorose/DeepFilterNet/commit/7b14b89), [RNNoise](https://github.com/xiph/rnnoise), [BSD-Lizenz](https://github.com/xiph/rnnoise/blob/main/COPYING).
+
+**AudioSR:** Upstream-Code ist MIT. Der originale Hugging-Face-Checkpoint `haoheliu/audiosr_basic` ist als **Apache-2.0** markiert; `audiosr_speech` hat im geprüften Original-Repository keine Modelcard und keine sichtbare Lizenzangabe. Daher die Code-Lizenz nicht pauschal auf beide Gewichte übertragen. Upstream warnt: Training mit Lowpass-Verlust; unbekannte Cutoff-Muster, MP3-Kompression, starkes Rauschen oder Hall können unbefriedigende Ergebnisse erzeugen. Einbindung deshalb nur als explizit optionaler Versuch mit Originalerhalt. Quellen: [AudioSR-Code und Grenzen](https://github.com/haoheliu/versatile_audio_super_resolution), [MIT](https://github.com/haoheliu/versatile_audio_super_resolution/blob/main/LICENSE), [Basic-Gewichte](https://huggingface.co/haoheliu/audiosr_basic), [Speech-Gewichte](https://huggingface.co/haoheliu/audiosr_speech).
+
+## Vorschlag für einen Ablauf
+
+`Datei → Eingangscheck → Stem-Trennung → [Loop-/Sample-Schnitt oder MIDI] → [Tempo/Tonhöhe] → [Effekte] → ausgerichtete WAV-/MIDI-Dateien für die DAW`
+
+Für einen fertigen Mix: `Mix + optionaler Referenztrack → Mastering → Ausgangscheck → Export`. Einzelne Stems müssen nicht automatisch durch ein Mastering laufen.
+
+Nicht jede Datei muss alle Schritte durchlaufen. CPU/GPU-Eignung, Integrationsaufwand, Latenz und Kosten müssen am gewählten Paket-/Modellstand gemessen werden; hier wurden keine Laufzeit- oder Qualitätsbenchmarks durchgeführt. Stimmenkonvertierung wurde in diesem Durchgang nicht vertieft.

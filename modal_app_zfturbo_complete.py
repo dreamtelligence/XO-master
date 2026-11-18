@@ -12,6 +12,7 @@ Features:
 """
 
 import modal
+import modal_workspace as workspace
 import os
 from pathlib import Path
 import uuid
@@ -94,7 +95,7 @@ zfturbo_image = (
     ])
     .pip_install(["fastapi[standard]", "python-multipart", "requests"])
     .run_commands(_download_commands())
-)
+).add_local_python_source("modal_workspace")
 
 # GPU Memory Optimization Settings
 GPU_SETTINGS = {
@@ -155,7 +156,7 @@ def run_zfturbo_inference(model_key: str, input_dir: Path, store_dir: Path, use_
     gpu="a10g",
     timeout=1800,  # 30 minutes
     memory=20480,  # 20GB memory
-    volumes={storage_path: volume},
+    volumes={storage_path: volume, workspace.STAGING_PATH: workspace.staging},
     scaledown_window=120
 )
 def bs_roformer_separate_audio(
@@ -164,7 +165,8 @@ def bs_roformer_separate_audio(
     job_id: str,
     selected_stems: str = "all",
     use_tta: bool = False,
-    extract_instrumental: bool = False
+    extract_instrumental: bool = False,
+    coherent: bool = False
 ) -> dict:
     """
     Stem separation: SCNet XL IHF for the 4 stems, Mel-Band RoFormer for vocals/instrumental.
@@ -205,19 +207,21 @@ def bs_roformer_separate_audio(
         temp_input_dir = job_dir / "temp_input"
         temp_input_dir.mkdir(exist_ok=True)
         orig_file = job_dir / filename
-        orig_file.write_bytes(audio_data)
+        if not workspace.load_input(audio_data, orig_file, "separation", job_id):
+            return {"cancelled": True}
         input_wav_path = temp_input_dir / "input.wav"
         ffmpeg_cmd = ["ffmpeg", "-y", "-i", str(orig_file), "-ar", "44100", "-ac", "2", "-sample_fmt", "s16", str(input_wav_path)]
         try:
             subprocess.run(ffmpeg_cmd, check=True, capture_output=True, timeout=120)
         except subprocess.CalledProcessError as e:
             raise Exception(f"FFmpeg-Konvertierung fehlgeschlagen: {e.stderr.decode(errors='ignore')[-500:]}")
-        print(f"📁 Input: {input_wav_path} ({len(audio_data) // 1024} KB original)")
+        print(f"📁 Input: {input_wav_path} ({orig_file.stat().st_size // 1024} KB original)")
         volume.commit()
 
         # 1) SCNet XL IHF: drums / bass / other (+ vocals if no dedicated vocal pass is needed)
         need_band_stems = any(s in stems_to_process for s in ["drums", "bass", "other"])
-        need_vocal_model = "vocals" in stems_to_process or extract_instrumental
+        need_vocal_model = ("vocals" in stems_to_process and not coherent) or extract_instrumental
+        need_band_stems |= coherent
         stems_store = output_dir / "scnet"
         vocals_store = output_dir / "vocal_model"
 
@@ -232,7 +236,7 @@ def bs_roformer_separate_audio(
 
         set_status(80, "Dateien werden kopiert")
         sources = {stem: stems_store / "input" / f"{stem}.wav" for stem in ["drums", "bass", "other"]}
-        sources["vocals"] = vocals_store / "input" / "vocals.wav"
+        sources["vocals"] = (vocals_store if need_vocal_model else stems_store) / "input" / "vocals.wav"
         if extract_instrumental:
             sources["instrumental"] = vocals_store / "input" / "instrumental.wav"
 
@@ -250,35 +254,38 @@ def bs_roformer_separate_audio(
         if not output_files:
             raise Exception("No output files were successfully processed")
 
-        # Vorschau-Aufgaben für alle finalen Dateien sammeln
-        preview_tasks = [
-            (str(final_output_dir / f), str(final_output_dir / f"preview_{f}"))
-            for f in output_files
-        ]
-        volume.commit()
+        if isinstance(audio_data, bytes):
+            # Vorschau-Aufgaben für alle finalen Dateien sammeln
+            preview_tasks = [
+                (str(final_output_dir / f), str(final_output_dir / f"preview_{f}"))
+                for f in output_files
+            ]
+            volume.commit()
 
-        print(f"🚀 Starting parallel generation of {len(preview_tasks)} previews...")
-        job_status[job_id]["phase"] = "Vorschauen werden parallel erstellt"
-        save_job_status(job_id, job_status[job_id])
+            print(f"🚀 Starting parallel generation of {len(preview_tasks)} previews...")
+            job_status[job_id]["phase"] = "Vorschauen werden parallel erstellt"
+            save_job_status(job_id, job_status[job_id])
 
-        results = list(generate_preview_parallel.map(preview_tasks))
-        successful_previews = sum(1 for r in results if r)
-        print(f"✅ Parallel preview generation complete. {successful_previews}/{len(preview_tasks)} successful.")
+            results = list(generate_preview_parallel.map(preview_tasks))
+            successful_previews = sum(1 for r in results if r)
+            print(f"✅ Parallel preview generation complete. {successful_previews}/{len(preview_tasks)} successful.")
 
-        # Make sure previews written by the other containers are visible before completing
-        volume.reload()
+            # Make sure previews written by the other containers are visible before completing
+            volume.reload()
 
         total_size = sum(f.stat().st_size for f in final_output_dir.glob("*.wav"))
         processing_time = round(time.time() - start_time, 2)
         model_info = {
-            "name": "SCNet XL IHF + Mel-Band RoFormer (ZFTurbo)",
-            "sdr": f"{SEPARATION_MODELS['stems']['sdr']}dB avg / vocals {SEPARATION_MODELS['vocals']['sdr']}dB",
-            "type": "SCNet (stems) + Mel-Band RoFormer (vocals)",
+            "name": "SCNet XL IHF" if coherent else "SCNet XL IHF + Mel-Band RoFormer (ZFTurbo)",
+            "sdr": (f"{SEPARATION_MODELS['stems']['sdr']}dB avg" if coherent else
+                    f"{SEPARATION_MODELS['stems']['sdr']}dB avg / vocals {SEPARATION_MODELS['vocals']['sdr']}dB"),
+            "type": "SCNet (alle gewählten Stems)" if coherent else "SCNet (stems) + Mel-Band RoFormer (vocals)",
             "repository": "ZFTurbo/Music-Source-Separation-Training"
         }
 
         job_status[job_id] = {
-            "status": "completed",
+            "status": "completed" if len(output_files) == len(wanted) else "partial",
+            "failed_tasks": {stem: "Datei fehlt" for stem in wanted if f"{stem}.wav" not in output_files},
             "progress": 100,
             "phase": "Fertig - Download verfügbar",
             "error": None,
@@ -297,7 +304,7 @@ def bs_roformer_separate_audio(
             "job_id": job_id,
             "processing_time": processing_time,
             "total_size": total_size,
-            "model_used": "scnet_xl_ihf+mel_band_roformer",
+            "model_used": "scnet_xl_ihf" if coherent else "scnet_xl_ihf+mel_band_roformer",
             "device": "A10G GPU (24GB)",
             "model_info": model_info,
             "gpu_settings": GPU_SETTINGS,
@@ -323,7 +330,7 @@ def bs_roformer_separate_audio(
 
 @app.function(
     image=zfturbo_image,
-    volumes={storage_path: volume},
+    volumes={storage_path: volume, workspace.STAGING_PATH: workspace.staging},
     timeout=120 # 2 minutes should be plenty for one preview
 )
 def generate_preview_parallel(paths: tuple[str, str], duration: int = 30):
@@ -666,11 +673,14 @@ def create_fastapi_app():
         return {"status": "ok"}
 
     
+    workspace.register(web_app, "separation", 100 * 1024 * 1024, bs_roformer_separate_audio,
+                       lambda job_id, o: (job_id, f"{job_id}.wav", job_id, o["selected_stems"], o["use_tta"],
+                              o["extract_instrumental"], o["coherent"]), status)
     return web_app
 
 # Deploy FastAPI app using Modal's ASGI pattern
-@app.function(image=zfturbo_image, volumes={storage_path: volume})
-@modal.asgi_app()
+@app.function(image=zfturbo_image, volumes={storage_path: volume, workspace.STAGING_PATH: workspace.staging})
+@modal.asgi_app(requires_proxy_auth=True)
 def fastapi_app():
     return create_fastapi_app()
 

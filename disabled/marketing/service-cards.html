@@ -1,0 +1,131 @@
+                    <div class="row g-4">
+                        <div class="col-md-6">
+                            <div class="card h-100 service-card enhanced-card" onclick="selectService('separator')" style="position: relative;">
+                                
+                                <div class="card-body text-center d-flex flex-column">
+                                    <div class="service-icon-wrapper mb-4" style="height: 80px; display: flex; align-items: center; justify-content: center;">
+                                        <i class="fas fa-music fa-3x text-primary"></i>
+                                    </div>
+                                    <h4 class="mb-3" style="font-size: 1.4rem; font-weight: 600;">🚀 AI Stem Separation</h4>
+                                    <p class="text-muted mb-4 flex-grow-1" style="font-size: 1rem; line-height: 1.6;">SCNet XL IHF (9.92dB SDR) für 4 Stems + Mel-Band RoFormer für besonders saubere Vocals.</p>
+                                    <div class="service-features mt-auto">
+                                        <div class="feature-list text-start">
+                                            <div class="feature-item mb-2">
+                                                <i class="fas fa-check text-success me-2" style="font-size: 0.9rem;"></i>
+                                                <span style="font-size: 0.95rem; font-weight: 500;"><strong>9.92dB SDR</strong> (SCNet XL IHF)</span>
+                                            </div>
+                                            <div class="feature-item mb-2">
+                                                <i class="fas fa-check text-success me-2" style="font-size: 0.9rem;"></i>
+                                                <span style="font-size: 0.95rem; font-weight: 500;">Mel-Band RoFormer: Vocals 10.98dB SDR</span>
+                                            </div>
+                                            <div class="feature-item mb-2">
+                                                <i class="fas fa-check text-success me-2" style="font-size: 0.9rem;"></i>
+                                                <span style="font-size: 0.95rem; font-weight: 500;">Standard Stems (Vocals, Drums, Bass, Other)</span>
+                                            </div>
+                                            <div class="feature-item">
+                                                <i class="fas fa-check text-success me-2" style="font-size: 0.9rem;"></i>
+                                                <span style="font-size: 0.95rem; font-weight: 500;">Optional TTA &amp; Instrumental-Version</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <button type="button" class="btn btn-primary w-100 mt-4" aria-controls="separator" onclick="event.stopPropagation(); selectService('separator')">Stems trennen <i class="fas fa-arrow-right ms-2" aria-hidden="true"></i></button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="card h-100 service-card" onclick="selectService('mastering')">
+                                <div class="card-body text-center d-flex flex-column">
+                                    <div class="service-icon-wrapper mb-4" style="height: 80px; display: flex; align-items: center; justify-content: center;">
+                                        <i class="fas fa-sliders-h fa-3x text-primary"></i>
+                                    </div>
+                                    <h4 class="mb-3" style="font-size: 1.4rem; font-weight: 600;">Professional AI Mastering</h4>
+                                    <p class="text-muted mb-4 flex-grow-1" style="font-size: 1rem; line-height: 1.6;">Erreichen Sie kommerzielle Lautstärke und professionellen Sound. Automatisches Mastering nach Industry-Standards für Streaming-Plattformen.</p>
+                                    <div class="service-features mt-auto">
+                                        <div class="feature-list text-start">
+                                            <div class="feature-item mb-2">
+                                                <i class="fas fa-check text-success me-2" style="font-size: 0.9rem;"></i>
+                                                <span style="font-size: 0.95rem; font-weight: 500;">LUFS-Targeting (-16/-14/-9 LUFS)</span>
+                                            </div>
+                                            <div class="feature-item mb-2">
+                                                <i class="fas fa-check text-success me-2" style="font-size: 0.9rem;"></i>
+                                                <span style="font-size: 0.95rem; font-weight: 500;">Bass Mono-Making & FFT-Analyse</span>
+                                            </div>
+                                            <div class="feature-item mb-2">
+                                                <i class="fas fa-check text-success me-2" style="font-size: 0.9rem;"></i>
+                                                <span style="font-size: 0.95rem; font-weight: 500;">Intelligente Multi-Band EQ</span>
+                                            </div>
+                                            <div class="feature-item">
+                                                <i class="fas fa-check text-success me-2" style="font-size: 0.9rem;"></i>
+                                                <span style="font-size: 0.95rem; font-weight: 500;">16bit/24bit Professional Output</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <button type="button" class="btn btn-primary w-100 mt-4" aria-controls="mastering" onclick="event.stopPropagation(); selectService('mastering')">Track mastern <i class="fas fa-arrow-right ms-2" aria-hidden="true"></i></button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="card h-100 service-card" onclick="selectService('transcription')">
+                                <div class="card-body text-center d-flex flex-column">
+                                    <div class="service-icon-wrapper mb-4" style="height: 80px; display: flex; align-items: center; justify-content: center;">
+                                        <i class="fas fa-file-audio fa-3x text-primary"></i>
+                                    </div>
+                                    <h4 class="mb-3" style="font-size: 1.4rem; font-weight: 600;">AI Music Transcription</h4>
+                                    <p class="text-muted mb-4 flex-grow-1" style="font-size: 1rem; line-height: 1.6;">Konvertieren Sie jede Aufnahme in bearbeitbare MIDI-Dateien. Perfekt für Musikanalyse, Remixing und digitale Musikproduktion.</p>
+                                    <div class="service-features mt-auto">
+                                        <div class="feature-list text-start">
+                                            <div class="feature-item mb-2">
+                                                <i class="fas fa-check text-success me-2" style="font-size: 0.9rem;"></i>
+                                                <span style="font-size: 0.95rem; font-weight: 500;">Akkord-Erkennung (essentia)</span>
+                                            </div>
+                                            <div class="feature-item mb-2">
+                                                <i class="fas fa-check text-success me-2" style="font-size: 0.9rem;"></i>
+                                                <span style="font-size: 0.95rem; font-weight: 500;">Melodie &amp; Instrumente (MuScriptor)</span>
+                                            </div>
+                                            <div class="feature-item mb-2">
+                                                <i class="fas fa-check text-success me-2" style="font-size: 0.9rem;"></i>
+                                                <span style="font-size: 0.95rem; font-weight: 500;">Drum-Noten als MIDI (MuScriptor)</span>
+                                            </div>
+                                            <div class="feature-item mb-2">
+                                                <i class="fas fa-check text-success me-2" style="font-size: 0.9rem;"></i>
+                                                <span style="font-size: 0.95rem; font-weight: 500;">Beat &amp; Tempo (beat_this)</span>
+                                            </div>
+                                            <div class="feature-item">
+                                                <i class="fas fa-check text-success me-2" style="font-size: 0.9rem;"></i>
+                                                <span style="font-size: 0.95rem; font-weight: 500;">MIDI & JSON Export</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <button type="button" class="btn btn-primary w-100 mt-4" aria-controls="transcription" onclick="event.stopPropagation(); selectService('transcription')">Musik in MIDI umwandeln <i class="fas fa-arrow-right ms-2" aria-hidden="true"></i></button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="card h-100 service-card" onclick="selectService('enhancement')">
+                                <div class="card-body text-center d-flex flex-column">
+                                    <div class="service-icon-wrapper mb-4" style="height: 80px; display: flex; align-items: center; justify-content: center;">
+                                        <i class="fas fa-microphone-alt fa-3x text-primary"></i>
+                                    </div>
+                                    <h4 class="mb-3" style="font-size: 1.4rem; font-weight: 600;">Speech Enhancement</h4>
+                                    <p class="text-muted mb-4 flex-grow-1" style="font-size: 1rem; line-height: 1.6;">Professionelle Sprachverbesserung mit KI-gestützter Rauschunterdrückung, Füllwort-Entfernung und Qualitätsoptimierung für Podcasts und Aufnahmen.</p>
+                                    <div class="service-features mt-auto">
+                                        <div class="feature-list text-start">
+                                            <div class="feature-item mb-2">
+                                                <i class="fas fa-check text-success me-2" style="font-size: 0.9rem;"></i>
+                                                <span style="font-size: 0.95rem; font-weight: 500;">MossFormer2 Noise Reduction</span>
+                                            </div>
+                                            <div class="feature-item mb-2">
+                                                <i class="fas fa-check text-success me-2" style="font-size: 0.9rem;"></i>
+                                                <span style="font-size: 0.95rem; font-weight: 500;">Whisper Filler Word Removal</span>
+                                            </div>
+                                            <div class="feature-item">
+                                                <i class="fas fa-check text-success me-2" style="font-size: 0.9rem;"></i>
+                                                <span style="font-size: 0.95rem; font-weight: 500;">Broadcast-Quality Processing</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <button type="button" class="btn btn-primary w-100 mt-4" aria-controls="enhancement" onclick="event.stopPropagation(); selectService('enhancement')">Sprache verbessern <i class="fas fa-arrow-right ms-2" aria-hidden="true"></i></button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>

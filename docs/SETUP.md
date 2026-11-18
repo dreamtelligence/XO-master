@@ -1,3 +1,5 @@
+> Für den aktuellen privaten Artist Workspace siehe [Betrieb und Start](ARTIST_WORKSPACE.md) und [Prüfbericht](verification/2026-11-18-artist-workspace.md). Die folgenden kommerziellen Informationen sind historisch.
+
 # 🛠️ Development Setup Guide
 
 Complete step-by-step guide to set up the AI Music Studio Platform for local development.

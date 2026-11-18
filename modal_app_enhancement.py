@@ -8,6 +8,7 @@ Klein Digital Solutions - Audio Enhancement Service
 """
 
 import modal
+import modal_workspace as workspace
 import uuid
 import json
 import time
@@ -67,7 +68,7 @@ enhancement_image = (
     ])
     .env({"HF_HUB_CACHE": HF_CACHE})
     .run_function(_prefetch_models)
-)
+).add_local_python_source("modal_workspace")
 
 # Storage
 volume = modal.Volume.from_name("audio-enhancement-volume", create_if_missing=True)
@@ -95,7 +96,7 @@ def save_job_status(job_id: str, status_data: dict):
     timeout=1800,
     memory=8192,
     cpu=4.0,
-    volumes={storage_path: volume}
+    volumes={storage_path: volume, workspace.STAGING_PATH: workspace.staging}
     # Cold start - no warm containers
 )
 class AudioEnhancer:
@@ -141,6 +142,27 @@ class AudioEnhancer:
 
         logger.info("🎉 Model loading finished")
 
+    def propose_disturbances(self, source, rate):
+        import librosa
+        import torch
+
+        if self.ast_model is None or not self.unwanted_ids:
+            raise RuntimeError("AST model is unavailable")
+        analysis_rate = 16000
+        downsampled = librosa.resample(source, orig_sr=rate, target_sr=analysis_rate)
+        starts = list(range(0, max(1, len(downsampled) - analysis_rate + 1), analysis_rate // 2))
+        for offset in range(0, len(starts), 16):
+            chunk_starts = starts[offset:offset + 16]
+            batch = [downsampled[start:start + analysis_rate] for start in chunk_starts]
+            inputs = self.ast_extractor(batch, sampling_rate=analysis_rate, return_tensors="pt").to("cuda")
+            with torch.no_grad():
+                predictions = torch.sigmoid(self.ast_model(**inputs).logits)[:, self.unwanted_ids].max(dim=1)
+            for start, probability, prediction in zip(chunk_starts, predictions.values.tolist(), predictions.indices.tolist()):
+                if probability > 0.3:
+                    label = self.ast_model.config.id2label.get(self.unwanted_ids[prediction], "Störgeräusch")
+                    yield {"start": start / analysis_rate, "end": min(len(source) / rate, 1 + start / analysis_rate),
+                           "kind": "disturbance", "text": label}
+
     @modal.method()
     def enhance_audio_processing(
         self,
@@ -153,6 +175,7 @@ class AudioEnhancer:
         Core audio enhancement processing function
         """
         import io
+        is_workspace = isinstance(audio_data, str)
         import tempfile
         import librosa
         import soundfile as sf
@@ -174,8 +197,10 @@ class AudioEnhancer:
             
             # Create temporary file
             with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
-                temp_file.write(audio_data)
                 temp_path = temp_file.name
+            if not workspace.load_input(audio_data, Path(temp_path), "enhancement", job_id):
+                os.unlink(temp_path)
+                return {"cancelled": True}
             
             # Load audio
             audio, sr = librosa.load(temp_path, sr=None, mono=True)
@@ -322,23 +347,7 @@ class AudioEnhancer:
             if enhancement_options.get("cough_click_removal", True):
                 logger.info("🤧 Detecting and removing coughs/clicks with AST...")
                 try:
-                    if self.ast_model is None:
-                        raise Exception("AST model not loaded")
-                    ast_sr = 16000
-                    ast_audio = librosa.resample(enhanced_audio, orig_sr=sr, target_sr=ast_sr)
-                    win, hop = ast_sr, ast_sr // 2
-                    starts = list(range(0, max(1, len(ast_audio) - win + 1), hop))
-                    windows = [ast_audio[st:st + win] for st in starts]
-
-                    flagged = []
-                    for i in range(0, len(windows), 16):
-                        batch = windows[i:i + 16]
-                        inputs = self.ast_extractor(batch, sampling_rate=ast_sr, return_tensors="pt").to("cuda")
-                        with torch.no_grad():
-                            probs = torch.sigmoid(self.ast_model(**inputs).logits)[:, self.unwanted_ids]
-                        for j, p in enumerate(probs.max(dim=1).values.tolist()):
-                            if p > 0.3:  # Confidence threshold
-                                flagged.append(starts[i + j] / ast_sr)
+                    flagged = [event["start"] for event in self.propose_disturbances(enhanced_audio, sr)]
 
                     fade_samples = int(0.1 * sr)  # 100ms fade
                     for start_time in flagged:
@@ -443,26 +452,62 @@ class AudioEnhancer:
             enhanced_path = Path(storage_path) / enhanced_filename
             sf.write(enhanced_path, enhanced_audio, sr, subtype='PCM_24')
             
-            # Create comparison preview
-            min_length = min(len(audio), len(enhanced_audio))
-            preview_audio = np.column_stack([audio[:min_length], enhanced_audio[:min_length]])
-            preview_filename = f"preview_{job_id}.wav"
-            preview_path = Path(storage_path) / preview_filename
-            sf.write(preview_path, preview_audio, sr, subtype='PCM_16')
-            
+            files = {"enhanced": enhanced_filename}
+            failed_tasks = {}
+            if is_workspace and (enhancement_options.get("speech_suggestions") or enhancement_options.get("disturbance_suggestions")):
+                suggestions_path = Path(storage_path) / f"suggestions_{job_id}.json"
+                speech = {"schema": 1, "source_duration": len(audio) / sr, "transcript": [], "suggestions": []}
+                voiced = librosa.effects.split(audio, top_db=30)
+                previous = 0
+                for begin, end in [*voiced.tolist(), [len(audio), len(audio)]]:
+                    if begin - previous >= 0.35 * sr:
+                        speech["suggestions"].append({"start": previous / sr, "end": begin / sr, "kind": "pause"})
+                    previous = end
+                try:
+                    if self.whisper_model is None:
+                        raise RuntimeError("Whisper model is unavailable")
+                    transcript = self.whisper_model.transcribe(temp_path, word_timestamps=True, fp16=True)
+                    speech["language"] = transcript.get("language")
+                    fillers = {"äh", "ähm", "eh", "ehm", "um", "uh"}
+                    for segment in transcript.get("segments", []):
+                        speech["transcript"].append({key: segment[key] for key in ("start", "end", "text")})
+                        for word in segment.get("words", []):
+                            label = word["word"].strip()
+                            if (label.strip(string.punctuation).lower() in fillers
+                                    and 0 <= word["start"] < word["end"] <= len(audio) / sr):
+                                speech["suggestions"].append({"start": word["start"], "end": word["end"],
+                                                              "kind": "filler", "text": label})
+                except Exception as error:
+                    logger.warning(f"Whisper suggestions failed: {error}")
+                    failed_tasks["transcript"] = "Whisper konnte kein Transkript erstellen"
+                if enhancement_options.get("disturbance_suggestions"):
+                    try:
+                        speech["suggestions"].extend(self.propose_disturbances(audio, sr))
+                    except Exception as error:
+                        logger.warning(f"AST suggestions failed: {error}")
+                        failed_tasks["disturbances"] = "AST konnte keine Störsegmente prüfen"
+                speech["suggestions"].sort(key=lambda item: item["start"])
+                suggestions_path.write_text(json.dumps(speech, ensure_ascii=False), encoding="utf-8")
+                files["suggestions"] = suggestions_path.name
+            elif not is_workspace:
+                # Existing clients expect the legacy stereo preview.
+                min_length = min(len(audio), len(enhanced_audio))
+                preview_audio = np.column_stack([audio[:min_length], enhanced_audio[:min_length]])
+                preview_filename = f"preview_{job_id}.wav"
+                sf.write(Path(storage_path) / preview_filename, preview_audio, sr, subtype="PCM_16")
+                files["preview"] = preview_filename
+
             # Final status update
             result = {
-                "status": "completed",
+                "status": "partial" if failed_tasks else "completed",
+                "failed_tasks": failed_tasks,
                 "progress": 100,
                 "phase": "Enhancement abgeschlossen!",
                 "error": None,
                 "job_id": job_id,
                 "processing_log": processing_log,
                 "metrics": metrics,
-                "files": {
-                    "enhanced": enhanced_filename,
-                    "preview": preview_filename
-                },
+                "files": files,
                 "processing_time": None
             }
             
@@ -491,9 +536,9 @@ enhancer = AudioEnhancer()
 
 @app.function(
     image=enhancement_image,
-    volumes={storage_path: volume}
+    volumes={storage_path: volume, workspace.STAGING_PATH: workspace.staging}
 )
-@modal.asgi_app()
+@modal.asgi_app(requires_proxy_auth=True)
 def fastapi_app():
     from fastapi import FastAPI, UploadFile, File, HTTPException, Form
     from fastapi.responses import FileResponse, JSONResponse
@@ -605,7 +650,7 @@ def fastapi_app():
         return FileResponse(
             path=str(file_path),
             filename=filename,
-            media_type="audio/wav"
+            media_type="application/json" if filename.endswith(".json") else "audio/wav"
         )
 
     @web_app.get("/health")
@@ -621,6 +666,8 @@ def fastapi_app():
             },
         }
     
+    workspace.register(web_app, "enhancement", 100 * 1024 * 1024, enhancer.enhance_audio_processing,
+                       lambda job_id, o: (job_id, f"{job_id}.wav", job_id, json.loads(o["enhancement_options"])), enhancement_status)
     return web_app
 
 if __name__ == "__main__":

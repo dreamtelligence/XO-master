@@ -1,3 +1,5 @@
+> Aktueller Stand (18.11.2026): privater lokaler Betrieb, Marketing/Stripe/Konten deaktiviert, alle Modal-Web-Apps authentifiziert. Siehe [PRIVATE_MODE.md](docs/PRIVATE_MODE.md). Die folgenden kommerziellen Beschreibungen sind historisch.
+
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.

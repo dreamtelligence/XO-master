@@ -14,6 +14,7 @@ must have accepted the license on https://huggingface.co/MuScriptor/muscriptor-l
 """
 
 import modal
+import modal_workspace as workspace
 from pathlib import Path
 import uuid
 import subprocess
@@ -61,7 +62,7 @@ transcription_image = (
     ])
     .env({"HF_HUB_CACHE": HF_CACHE_PATH})
     .run_function(_prefetch_beat_this)
-)
+).add_local_python_source("modal_workspace")
 
 with transcription_image.imports():
     import numpy as np
@@ -128,7 +129,7 @@ def update_job_progress(job_id: str, progress: int, phase: str, additional_data:
     gpu="a10g",
     timeout=2400,
     memory=32768,
-    volumes={storage_path: volume, HF_CACHE_PATH: hf_cache},
+    volumes={storage_path: volume, HF_CACHE_PATH: hf_cache, workspace.STAGING_PATH: workspace.staging},
     secrets=[modal.Secret.from_name("huggingface")],
     scaledown_window=120
 )
@@ -154,7 +155,8 @@ def transcribe_complete_audio(
         job_dir.mkdir(parents=True, exist_ok=True)
 
         input_file = job_dir / filename
-        input_file.write_bytes(audio_data)
+        if not workspace.load_input(audio_data, input_file, "transcription", job_id):
+            return {"cancelled": True}
 
         output_dir = job_dir / "output"
         output_dir.mkdir(exist_ok=True)
@@ -307,6 +309,8 @@ def transcribe_complete_audio(
 
                 create_daw_tempo_map(beats, primary_tempo, final_output_dir / "tempo_map.txt")
                 output_files.append("tempo_map.txt")
+                create_tempo_map_midi(beats, primary_tempo, final_output_dir / "tempo_map.mid")
+                output_files.append("tempo_map.mid")
 
                 completed_tasks.append("beat")
                 print(f"Beat analysis completed - {primary_tempo:.1f} BPM")
@@ -338,7 +342,7 @@ def transcribe_complete_audio(
         volume.commit()
 
         final_status = {
-            "status": "completed",
+            "status": "partial" if task_errors else "completed",
             "progress": 100,
             "phase": "Fertig - Alle Transcriptions fuer Producer verfuegbar",
             "error": None,
@@ -588,45 +592,46 @@ def create_chord_chart(chord_progression, key_info, output_path):
         f.write("- Experiment with different chord voicings\n")
 
 def create_click_track_midi(beats, downbeats, tempo, output_path):
-    """Create a click track MIDI for DAW synchronization"""
-    try:
-        import pretty_midi
-        
-        midi = pretty_midi.PrettyMIDI()
-        click_track = pretty_midi.Instrument(program=0, is_drum=True, name="Click Track")
-        
-        # Click sounds
-        kick_click = 36   # Strong beat (downbeat)
-        snare_click = 37  # Regular beat
-        
-        # Add downbeats as strong clicks
-        for downbeat_time in downbeats:
-            note = pretty_midi.Note(
-                velocity=120,  # Loud for downbeats
-                pitch=kick_click,
-                start=downbeat_time,
-                end=downbeat_time + 0.05
-            )
-            click_track.notes.append(note)
-        
-        # Add regular beats as softer clicks
-        for beat_time in beats:
-            # Skip if this is already a downbeat
-            if not any(abs(beat_time - db) < 0.01 for db in downbeats):
-                note = pretty_midi.Note(
-                    velocity=80,  # Softer for regular beats
-                    pitch=snare_click,
-                    start=beat_time,
-                    end=beat_time + 0.05
-                )
-                click_track.notes.append(note)
-        
-        midi.instruments.append(click_track)
-        midi.write(str(output_path))
-        print(f"Created click track MIDI: {output_path}")
-        
-    except Exception as e:
-        print(f"Could not create click track MIDI: {e}")
+    """Write a constant-tempo MIDI click preserving detected times in seconds."""
+    from mido import Message, MetaMessage, MidiFile, MidiTrack, bpm2tempo, second2tick
+
+    midi = MidiFile(ticks_per_beat=960)
+    microseconds = bpm2tempo(tempo)
+    midi.tracks.append(MidiTrack([MetaMessage("set_tempo", tempo=microseconds)]))
+    click = MidiTrack([MetaMessage("track_name", name="Click Track")])
+    midi.tracks.append(click)
+    hits = [(float(start), 36) for start in downbeats]
+    hits += [(float(start), 37) for start in beats if not any(abs(start - db) < 0.01 for db in downbeats)]
+    events = []
+    for start, pitch in hits:
+        events.extend([(start, pitch, 120 if pitch == 36 else 80), (start + 0.05, pitch, 0)])
+    previous = 0
+    for seconds, pitch, velocity in sorted(events):
+        tick = second2tick(seconds, midi.ticks_per_beat, microseconds)
+        click.append(Message("note_on" if velocity else "note_off", channel=9, note=pitch,
+                             velocity=velocity, time=tick - previous))
+        previous = tick
+    midi.save(str(output_path))
+
+
+def create_tempo_map_midi(beats, tempo, output_path):
+    """Map one quarter note to each measured beat interval."""
+    from mido import MetaMessage, MidiFile, MidiTrack, bpm2tempo, second2tick
+
+    midi = MidiFile(ticks_per_beat=960)
+    primary = bpm2tempo(tempo)
+    timing = MidiTrack([MetaMessage("set_tempo", tempo=primary)])
+    midi.tracks.append(timing)
+    delay = second2tick(float(beats[0]), midi.ticks_per_beat, primary)
+    for first, second in zip(beats, beats[1:]):
+        interval = round(float(second - first) * 1_000_000)
+        if not 1 <= interval <= 0xFFFFFF:
+            raise ValueError("Invalid measured MIDI tempo interval")
+        timing.append(MetaMessage("set_tempo", tempo=interval, time=delay))
+        delay = midi.ticks_per_beat
+    timing.append(MetaMessage("end_of_track", time=delay))
+    midi.save(str(output_path))
+
 
 def detect_time_signature(beats, downbeats):
     """Detect time signature from beat analysis"""
@@ -1165,11 +1170,13 @@ def create_transcription_app():
         """Handle CORS preflight requests"""
         return {"status": "ok"}
     
+    workspace.register(web_app, "transcription", 100 * 1024 * 1024, transcribe_complete_audio,
+                       lambda job_id, o: (job_id, f"{job_id}_original.wav", job_id, o), transcription_status)
     return web_app
 
 # Deploy FastAPI app using Modal's ASGI pattern
-@app.function(image=transcription_image, volumes={storage_path: volume})
-@modal.asgi_app()
+@app.function(image=transcription_image, volumes={storage_path: volume, workspace.STAGING_PATH: workspace.staging})
+@modal.asgi_app(requires_proxy_auth=True)
 def transcription_app():
     return create_transcription_app()
 

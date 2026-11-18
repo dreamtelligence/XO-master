@@ -100,3 +100,7 @@ pyAudioAnalysis-main/
 # Cache
 .cache/
 .parcel-cache/
+# Private Modal proxy credentials (real config belongs outside this repo)
+.modal.toml
+modal-private*.json
+*.credentials.json

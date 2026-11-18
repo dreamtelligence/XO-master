@@ -10,6 +10,10 @@
       "use": "@vercel/static"
     },
     {
+      "src": "dreamtelligence-redesign.css",
+      "use": "@vercel/static"
+    },
+    {
       "src": "api/**/*.js",
       "use": "@vercel/node"
     }
@@ -22,6 +26,10 @@
     {
       "src": "/header.webp",
       "dest": "/header.webp"
+    },
+    {
+      "src": "/dreamtelligence-redesign\\.css",
+      "dest": "/dreamtelligence-redesign.css"
     },
     {
       "src": "/(.*)",

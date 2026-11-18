@@ -15,6 +15,7 @@ below USD 1M annual revenue). Weights are gated on Hugging Face, so the
 """
 
 import modal
+import modal_workspace as workspace
 from pathlib import Path
 import uuid
 import time
@@ -67,7 +68,7 @@ audio_gen_image = (
     ])
     .env({"HF_HUB_CACHE": HF_CACHE})
     .run_function(_prefetch_model, secrets=[modal.Secret.from_name("huggingface")])
-)
+).add_local_python_source("modal_workspace")
 
 
 def save_job_status(job_id: str, status_data: dict):
@@ -87,7 +88,7 @@ def save_job_status(job_id: str, status_data: dict):
     gpu="a10g",
     timeout=1200,
     memory=20480,
-    volumes={storage_path: volume},
+    volumes={storage_path: volume, workspace.STAGING_PATH: workspace.staging},
     scaledown_window=300  # Keep warm longer for large model
 )
 class AudioGenerator:
@@ -111,7 +112,8 @@ class AudioGenerator:
         guidance_scale: float = 7.0,
         output_format: str = "wav",
         negative_prompt: str = "Low quality.",
-        seed: int = 42
+        seed: int = 42,
+        workspace_job: bool = False
     ) -> dict:
         import subprocess
         import torch
@@ -119,6 +121,8 @@ class AudioGenerator:
 
         start_time = time.time()
         try:
+            if workspace_job and not workspace.start_worker("generation", job_id):
+                return {"cancelled": True}
             job_dir = Path(storage_path) / job_id
             output_dir = job_dir / "output"
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -333,12 +337,15 @@ def create_fastapi_app():
             "license": AUDIO_CONFIG["license"]
         }
 
+    workspace.register(web_app, "generation", 0 * 1024 * 1024, AudioGenerator().generate,
+                       lambda job_id, o: (o["prompt"], job_id, o["audio_length"], o["num_inference_steps"],
+                              o["guidance_scale"], o["output_format"], o["negative_prompt"], o["seed"], True), get_status)
     return web_app
 
 
 # Deploy FastAPI app
-@app.function(image=audio_gen_image, volumes={storage_path: volume})
-@modal.asgi_app()
+@app.function(image=audio_gen_image, volumes={storage_path: volume, workspace.STAGING_PATH: workspace.staging})
+@modal.asgi_app(requires_proxy_auth=True)
 def fastapi_app():
     return create_fastapi_app()
 

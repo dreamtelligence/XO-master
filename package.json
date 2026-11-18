@@ -1,25 +1,26 @@
 {
-  "name": "music-ai-separator",
+  "name": "dreamtelligence-artist-workspace",
   "version": "1.0.0",
-  "description": "Klein Digital Solutions - Music AI Separator with Stripe Subscriptions",
+  "description": "Privater Audio-Arbeitsplatz f\u00fcr Ableton Live und Logic Pro",
   "main": "index.html",
   "scripts": {
-    "dev": "vercel dev",
-    "build": "echo 'Static build - no build process needed'",
-    "start": "npx serve .",
-    "deploy": "vercel --prod"
+    "dev": ".venv/bin/python -m studio.app --dev",
+    "build": "npm --prefix web run build",
+    "start": "npm run build && .venv/bin/python -m studio.app",
+    "legacy": "python3 dev_server.py",
+    "test": ".venv/bin/python -m unittest discover -s tests",
+    "setup": "bash scripts/setup_workspace.sh"
   },
-  "keywords": ["music", "ai", "separator", "demucs", "modal", "klein-digital", "stripe", "subscriptions"],
+  "keywords": [
+    "audio",
+    "midi",
+    "modal",
+    "dreamtelligence"
+  ],
   "author": "Klein Digital Solutions",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/dreamtelligence/XO-master"
-  },
-  "dependencies": {
-    "stripe": "^14.25.0"
-  },
-  "devDependencies": {
-    "serve": "^14.0.0"
   }
 }
