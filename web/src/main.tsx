@@ -648,7 +648,7 @@ function WorkspaceView({ current, id, back, open, caps, sharedPending, refresh, 
     </div>
     <footer className="bottom">
       <div className="transport" aria-label="Zentraler Transport">
-        <div className="inline transport-buttons"><button className="play" aria-label={player.playing ? 'Pause' : 'Abspielen'} disabled={!player.playing && !canPlay} onClick={togglePlayback}>{player.playing ? <Pause size={17} fill="currentColor" /> : <Play size={17} fill="currentColor" />}</button>
+        <div className="inline transport-buttons"><button className="play" data-playing={player.playing && !player.loading} aria-label={player.playing ? 'Pause' : 'Abspielen'} disabled={!player.playing && !canPlay} onClick={togglePlayback}>{player.playing ? <Pause size={17} fill="currentColor" /> : <Play size={17} fill="currentColor" />}</button>
           <button aria-label="Stopp" onClick={() => { player.pause(); player.seek(0) }}><Square size={14} fill="currentColor" aria-hidden="true" /></button><TransportTime clock={player.position} /></div>
         <OutputMeter playing={player.playing && !player.loading} read={player.readOutput} />
         <div className="inline transport-options"><button disabled={!audio(asset)} aria-pressed={loop} onClick={() => { setLoop(!loop); if (player.playing && !player.liveActive) { if (fxSide) listenFx(fxSide, player.cursor.current, !loop); else listen(undefined, player.cursor.current, side, !loop) } }}><Repeat2 size={16} aria-hidden="true" /> Loop</button>
