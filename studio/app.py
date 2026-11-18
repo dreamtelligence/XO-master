@@ -310,18 +310,18 @@ def create_app(root=None, config_path=CONFIG_PATH, *, port=8765, dev=False, lega
             return failure(410, "Zahlungen und Credits sind deaktiviert.", "disabled")
         return failure(404, "API-Route nicht gefunden.", "not_found")
 
-    @app.get("/")
+    @app.api_route("/", methods=["GET", "HEAD"])
     def homepage():
         index = ROOT / "web/dist/index.html"
         if not index.is_file():
             return failure(503, "Frontend zuerst mit npm run build erstellen.", "build_required")
         return FileResponse(index)
 
-    @app.get("/favicon.png")
+    @app.api_route("/favicon.png", methods=["GET", "HEAD"])
     def favicon():
         return FileResponse(ROOT / "web/public/favicon.png", media_type="image/png")
 
-    @app.get("/assets/{filename}")
+    @app.api_route("/assets/{filename}", methods=["GET", "HEAD"])
     def static_asset(filename: str):
         file = ROOT / "web/dist/assets" / filename
         if not re.fullmatch(r"[A-Za-z0-9_-]+\.(?:js|css|woff2)", filename) or not file.is_file():
